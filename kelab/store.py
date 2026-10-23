@@ -174,6 +174,13 @@ class Store:
                 "UPDATE runs SET dataset_md5=? WHERE run_id=?", (dataset_md5, run_id)
             )
 
+    def set_prompt_template_md5(self, run_id: str, md5: str) -> None:
+        """回填 prompt 模板指纹（旧库回填一次）。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE runs SET prompt_template_md5=? WHERE run_id=?", (md5, run_id)
+            )
+
     def finish_run(self, run_id: str, status: str = "done") -> None:
         with self._lock, self._conn:
             self._conn.execute(
@@ -295,6 +302,23 @@ class Store:
             )
 
     # ---- 断点续跑 ----
+
+    def mark_generation_error(self, gen_id: int, error: str) -> None:
+        """生成后的校验/判分阶段出异常时把该行标记为 error（retry_errors 可重试），
+        不留「ok 但无判分」的脏行。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE generations SET status='error', error=? WHERE gen_id=?",
+                (error[:1000], gen_id),
+            )
+
+    def n_distinct_items(self, run_id: str) -> int:
+        """run 实际评估过的题目数（试跑/中断时不等于测试集大小——报告/MDE 用它）。"""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(DISTINCT item_id) c FROM generations"
+                " WHERE run_id=? AND status='ok'", (run_id,),
+            ).fetchone()["c"]
 
     def pending(
         self, run_id: str, condition_id: str, item_ids: list[str], repeats: int

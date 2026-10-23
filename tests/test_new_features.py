@@ -394,6 +394,75 @@ class NewFeaturesTest(MockServerMixin, unittest.TestCase):
         self.assertEqual(200, status)
         self.assertIn("run_id", body)
 
+    # ---- 第二轮评审修复 ----
+
+    def test_prompt_template_guard(self):
+        """prompt 模板内容变更后拒绝续跑（与数据集守卫同口径）。"""
+        import os
+
+        from kelab.cli import CliError, _build_resources
+        from kelab.config import config_hash, load_domain, load_experiment
+
+        exp = load_experiment(self.root / "configs" / "experiments" / "mini.toml")
+        domain = load_domain(self.root / "configs" / "domains" / "conic.toml")
+        run_id = f"{exp.name}-{config_hash(domain, exp)}"
+        run_dir = self.root / "runs" / run_id
+        store = Store(run_dir / "kelab.sqlite")
+        store.create_run(run_id, config_json="{}", config_hash="x",
+                         prompt_template_md5=None, grammar_md5=None)
+        store.close()
+        self.addCleanup(lambda: __import__("shutil").rmtree(run_dir, ignore_errors=True))
+
+        tpl = self.root / "prompt_mini.md"
+        original = tpl.read_text(encoding="utf-8")
+        self.addCleanup(lambda: tpl.write_text(original, encoding="utf-8"))
+        cwd = os.getcwd()
+        try:
+            os.chdir(self.root)
+            # 第一次：旧库回填模板指纹，通过
+            res, _ = _build_resources(exp, self.root / "configs" / "domains" / "conic.toml",
+                                      need_api=False)
+            res.store.close()
+            # 改模板 → 拒绝续跑
+            tpl.write_text(original + "\n改动\n", encoding="utf-8")
+            with self.assertRaises(CliError) as caught:
+                _build_resources(exp, self.root / "configs" / "domains" / "conic.toml",
+                                 need_api=False)
+            self.assertIn("prompt 模板内容已变更", str(caught.exception))
+        finally:
+            os.chdir(cwd)
+
+    def test_estimate_calls_counts_all_dimensions(self):
+        from kelab.config import ExperimentConfig
+        from pathlib import Path as P
+
+        exp = ExperimentConfig(
+            name="x", domain="conic", kind="k",
+            testset=P("data/derived/mini.jsonl"),
+            ks=[0, 1], retrievers=["bm25"],
+            onto_modes=["full", "linked"], gen_models=["m1", "m2"],
+            repeats=1, seeds=[1],
+        )
+        n_conds, gens, judges = self.app.estimate_calls(exp)
+        self.assertEqual(8, n_conds)  # 2 k × 1 检索 × 2 onto × 2 模型
+        self.assertEqual(8, gens)     # 8 条件 × 1 题 × 1 重复
+
+    def test_split_shortfall_warns_loudly(self):
+        import contextlib
+        import io
+
+        from kelab import datasets
+        from kelab.datasets import Item
+
+        # 大族（全部同模板）导致分区装不满 → stderr 大声警告
+        items = [Item(item_id=f"q{i:03d}", question="同一模板题", gold_ke=f"ke{i}")
+                 for i in range(12)]
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            t, d, p = datasets.split_dataset3(items, 8, dev_size=3, seed=1)
+        self.assertIn("装不满", buf.getvalue())
+        self.assertEqual(0, len(t))  # 全进池（协议不允许拆族）
+
 
     # ---- dry-run 不建幽灵 run / 重试失败 / 抽检口径 / grammar 报错 ----
 

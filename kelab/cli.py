@@ -60,12 +60,10 @@ def _default_domain_path(name: str) -> Path:
 
 
 def _dataset_fingerprint(exp: ExperimentConfig) -> str:
-    """数据集版本指纹：测试集（+ fixed 池）内容的哈希。
-    数据变了指纹就变——防止一次 run 里混入两个版本的数据（可复现性硬要求）。"""
-    parts = [file_md5(exp.testset)]
-    if exp.pool_strategy == "fixed" and exp.pool:
-        parts.append(file_md5(exp.pool))
-    return hashlib.sha256(":".join(parts).encode("utf-8")).hexdigest()[:12]
+    """数据集版本指纹（实现已收敛到 config.dataset_fingerprint，与预登记同算法）。"""
+    from .config import dataset_fingerprint
+
+    return dataset_fingerprint(exp)
 
 
 def _build_resources(
@@ -92,6 +90,7 @@ def _build_resources(
         store = Store(Path("runs") / run_id / "kelab.sqlite")
         try:
             fingerprint = _dataset_fingerprint(exp)
+            template_md5 = file_md5(domain.prompt_template)
             existing = store.run_info(run_id)
             if existing is not None:
                 stored = existing["dataset_md5"] if "dataset_md5" in existing.keys() else None
@@ -105,7 +104,18 @@ def _build_resources(
                         f"  ① 数据是有意更新的 → 改实验名（或改任一配置）开新 run；\n"
                         f"  ② 确认要覆盖旧数据 → 备份后删除 runs/{run_id} 再跑。"
                     )
-            template_md5 = file_md5(domain.prompt_template)
+                # prompt 模板版本守卫（与数据集守卫同口径）：模板内容变了不许续跑
+                stored_tpl = (existing["prompt_template_md5"]
+                              if "prompt_template_md5" in existing.keys() else None)
+                if stored_tpl is None:
+                    store.set_prompt_template_md5(run_id, template_md5)
+                elif stored_tpl != template_md5:
+                    raise CliError(
+                        f"prompt 模板内容已变更（md5 {stored_tpl} → {template_md5}）。\n"
+                        f"同一 run 内混入两个 prompt 版本会破坏可复现性。请选择：\n"
+                        f"  ① 改动是有意的 → 改实验名（或改任一配置）开新 run；\n"
+                        f"  ② 只是回退调试 → 恢复模板内容后再续跑。"
+                    )
             store.create_run(
                 run_id,
                 config_json=json.dumps(
@@ -304,7 +314,8 @@ def cmd_smoke(args: argparse.Namespace) -> int:
     if args.force_prepare or not exp_k.testset.exists():
         prepare_args = argparse.Namespace(
             domain=str(domain_path), xlsx=args.xlsx, out=str(exp_k.testset),
-            pool_strategy="loo", pool=None,
+            pool_strategy="loo", pool=None, col=None,
+            split=None, dev=0, split_seed=42, pool_out=None,
         )
         code = cmd_prepare(prepare_args)
         if code != 0:

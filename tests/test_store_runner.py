@@ -189,6 +189,23 @@ class MiniExperimentTest(MockServerMixin):
             # 两题各自剔除自身后，交集非空（共享同一全局序列）
             self.assertTrue(set(a) & set(b))
 
+    def test_validation_crash_marks_error_row(self):
+        """校验阶段意外异常 → 该行标 error（不留「ok 但无判分」脏行），且批次不中断。"""
+        from unittest.mock import patch
+
+        exp = make_exp()
+        res = self.build_resources(self.make_tmpdir(), exp)
+        with patch.object(runner.ke_validate, "validate_ke",
+                          side_effect=RuntimeError("校验器炸了")):
+            stats = runner.run_experiment(res)
+        self.assertEqual(8, stats["error"])
+        rows = res.store.generation_join_rows("test-run", "k-bm25-k0")
+        self.assertTrue(all(r["status"] == "error" for r in rows))
+        self.assertTrue(all("校验/判分异常" in (r["error"] or "") for r in rows))
+        # 标 error 的行可用重试路径补跑（pending 已算完成，走 retry_errors 删除重跑）
+        ok_rows = [r for r in rows if r["status"] == "ok"]
+        self.assertEqual([], ok_rows)
+
     def test_gen_models_dimension(self):
         # 模型对照：gen_models 两个模型 → 条件翻倍，各用各的客户端
         exp = make_exp(gen_models=["gen-model", "gen-model-2"])

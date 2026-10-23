@@ -1,0 +1,19 @@
+# 由 kelab 看板保存；原文件备份于 archive/configs/
+
+
+[experiment]
+name = "main-k-frozen"
+domain = "conic"
+kind = "k"
+testset = "data/derived/testset20.jsonl"
+pool_strategy = "loo"
+ks = [0, 1, 2, 3, 5, 8, 12]
+ns = []
+fixed_k = 3
+retrievers = ["frozen"]
+nested = true
+repeats = 3
+seeds = [101, 202, 303]
+knee_threshold = 0.05
+std_alert = 0.03
+oracle_gap_threshold = 0.05

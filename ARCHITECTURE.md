@@ -69,7 +69,9 @@ validations(gen_id UNIQUE, lark_ok, lark_error, light_ok, issues_json, gen_opera
 judgments(gen_id UNIQUE, exact_match, retrieval_coverage, gen_coverage,
           llm_verdict, llm_score, llm_rationale, judge_model, judge_error,
           judge_prompt_tokens, judge_completion_tokens)
-reviews(gen_id PK, human_verdict, human_note, reviewed_at)   ← 看板人工抽检（WebApp 建）
+reviews_v2(gen_id, reviewer, human_verdict, human_note, blind, reviewed_at,
+           PRIMARY KEY(gen_id, reviewer))   ← 看板人工抽检（双人盲评+C裁决）
+reviews(gen_id PK, human_verdict, human_note, reviewed_at)   ← 旧表（迁移自动回填 v2）
 ```
 
 加列一律走 `store.MIGRATIONS`（旧库自动 ALTER）。
@@ -80,7 +82,8 @@ reviews(gen_id PK, human_verdict, human_note, reviewed_at)   ← 看板人工抽
 2. **run_id = 实验名 + 配置哈希**：改配置=新 run（天然隔离），同配置=断点续跑（不重复扣费）。试跑题数参与哈希 → pilot 是独立 run。
 3. **失败不中断**：单条生成失败记 error 落库继续；校验/判分只记录不阻断；池不足 fail-fast（那是配置错误）。
 4. **判分分两层**：确定性的（语法/静态/覆盖度/完全匹配）归程序；语义的归 LLM judge + 10% 人工抽检校准（对冲 judge 与生成同源偏差）。
-5. **看板只读为主**：写操作仅 reviews/note/revalidate/rejudge 四类，全部短事务+busy_timeout，与 runner 写进程（WAL）共存。
+5. **看板只读为主**：写操作为 reviews/note/revalidate/rejudge/设置/配置/标注/预登记/启动九类，
+   全部短事务+busy_timeout，与 runner 写进程（WAL）共存。
 6. **零新增运行时依赖**：BM25 自实现、embedding 走 API、不引 pandas/faiss——平台在哪台机器都能直接跑。
 
 ## 目录约定

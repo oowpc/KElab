@@ -244,6 +244,15 @@ def file_md5(path: Path | str) -> str:
     return hashlib.md5(Path(path).read_bytes()).hexdigest()
 
 
+def dataset_fingerprint(exp: "ExperimentConfig") -> str:
+    """数据集版本指纹：测试集（+ fixed 池）内容的哈希。
+    预登记与 run 守卫共用同一算法（此前两处各算各的，对不上）。"""
+    parts = [file_md5(exp.testset)]
+    if exp.pool_strategy == "fixed" and exp.pool:
+        parts.append(file_md5(exp.pool))
+    return hashlib.sha256(":".join(parts).encode("utf-8")).hexdigest()[:12]
+
+
 def verify_grammar_md5(domain: DomainConfig) -> str:
     """校验 grammar 文件 md5 与配置一致（防止误用旧版语法），返回实际 md5。"""
     if not domain.grammar_path.exists():

@@ -203,48 +203,54 @@ def process_one(
 
     gen_id = store.insert_generation(gen_row)
 
-    # validation（只记录不中断）
-    validation = ke_validate.validate_ke(
-        ke_text, res.domain.grammar_path, res.ontology
-    )
-    store.insert_validation(
-        gen_id,
-        {
-            "lark_ok": int(validation.lark_ok),
-            "lark_error": validation.lark_error,
-            "light_ok": int(validation.light_ok),
-            "issues_json": json.dumps(
-                [i.to_dict() for i in validation.issues], ensure_ascii=False
-            ),
-            "gen_operators": json.dumps(validation.operators, ensure_ascii=False),
-        },
-    )
+    # validation + judgment（同样不中断批次；异常则把该行标为 error，可一键重试）
+    try:
+        # validation（只记录不中断）
+        validation = ke_validate.validate_ke(
+            ke_text, res.domain.grammar_path, res.ontology
+        )
+        store.insert_validation(
+            gen_id,
+            {
+                "lark_ok": int(validation.lark_ok),
+                "lark_error": validation.lark_error,
+                "light_ok": int(validation.light_ok),
+                "issues_json": json.dumps(
+                    [i.to_dict() for i in validation.issues], ensure_ascii=False
+                ),
+                "gen_operators": json.dumps(validation.operators, ensure_ascii=False),
+            },
+        )
 
-    # judgment
-    gold_ops = set(item.gold_operators)
-    retrieved_ops: set[str] = set()
-    for ex in retrieval.items:
-        retrieved_ops |= set(ex.gold_operators)
-    gen_ops = set(validation.operators) if validation.lark_ok else None
+        # judgment
+        gold_ops = set(item.gold_operators)
+        retrieved_ops: set[str] = set()
+        for ex in retrieval.items:
+            retrieved_ops |= set(ex.gold_operators)
+        gen_ops = set(validation.operators) if validation.lark_ok else None
 
-    judged = judge.llm_judge(
-        res.judge_client, res.domain, item.question, item.gold_ke, ke_text
-    )
-    store.insert_judgment(
-        gen_id,
-        {
-            "exact_match": judge.exact_match(ke_text, item.gold_ke),
-            "retrieval_coverage": judge.jaccard(retrieved_ops, gold_ops) if condition.k > 0 else None,
-            "gen_coverage": judge.jaccard(gen_ops, gold_ops) if gen_ops is not None else None,
-            "llm_verdict": judged.verdict,
-            "llm_score": judged.score,
-            "llm_rationale": judged.rationale,
-            "judge_model": res.domain.judge_model,
-            "judge_error": judged.error,
-            "judge_prompt_tokens": judged.prompt_tokens,
-            "judge_completion_tokens": judged.completion_tokens,
-        },
-    )
+        judged = judge.llm_judge(
+            res.judge_client, res.domain, item.question, item.gold_ke, ke_text
+        )
+        store.insert_judgment(
+            gen_id,
+            {
+                "exact_match": judge.exact_match(ke_text, item.gold_ke),
+                "retrieval_coverage": judge.jaccard(retrieved_ops, gold_ops) if condition.k > 0 else None,
+                "gen_coverage": judge.jaccard(gen_ops, gold_ops) if gen_ops is not None else None,
+                "llm_verdict": judged.verdict,
+                "llm_score": judged.score,
+                "llm_rationale": judged.rationale,
+                "judge_model": res.domain.judge_model,
+                "judge_error": judged.error,
+                "judge_prompt_tokens": judged.prompt_tokens,
+                "judge_completion_tokens": judged.completion_tokens,
+            },
+        )
+    except Exception as exc:
+        # 校验/判分阶段异常：标 error 可重试，不留「ok 但无判分」的脏行
+        store.mark_generation_error(gen_id, f"校验/判分异常 {type(exc).__name__}: {exc}")
+        return "error"
     return "ok"
 
 

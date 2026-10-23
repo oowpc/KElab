@@ -187,10 +187,11 @@ def build_share_html(
         judge_note = f"judge 一致性人工抽检：{agree}/{total_reviewed}（{agree / total_reviewed:.0%}）"
 
     kind_cn = "few-shot 示例数 k 扫描" if exp.kind == "k" else "候选池规模 N 扫描"
+    models_text = "、".join(exp.gen_models) if exp.gen_models else domain.gen_model
     title = f"{exp.name} 实验报告"
     body = f"""<div class="wrap">
 <h1>{ESC(title)}</h1>
-<div class="sub">{ESC(domain.name)} 领域 · {kind_cn} · 生成 {ESC(domain.gen_model)}（温度 {domain.gen_temperature}） ·
+<div class="sub">{ESC(domain.name)} 领域 · {kind_cn} · 生成 {ESC(models_text)}（温度 {domain.gen_temperature}） ·
 judge {ESC(domain.judge_model)} · {testset_size} 题 × {exp.repeats} 重复 ·
 {datetime.now():%Y-%m-%d}</div>
 {provisional_html}

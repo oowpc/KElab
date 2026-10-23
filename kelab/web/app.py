@@ -477,17 +477,20 @@ class WebApp:
     # ---- 启动实验 ----
 
     def estimate_calls(self, exp) -> tuple[int, int, int]:
-        """启动前的调用量估算（零 token）：返回 (条件数, 生成调用, judge 调用)。"""
+        """启动前的调用量估算（零 token）：返回 (条件数, 生成调用, judge 调用)。
+        条件数含全部叉乘维度：k/N 档 × 检索器 × onto 模式 × 模型对照。"""
         testset = self.root / exp.testset
         n_items = 0
         if testset.exists():
             n_items = sum(1 for line in testset.open(encoding="utf-8") if line.strip())
         if exp.limit_items:
             n_items = min(n_items, exp.limit_items)
+        n_onto = len(exp.onto_modes or ["full"])
+        n_models = len(exp.gen_models or ["default"])
         if exp.kind == "k":
-            n_conds = len(exp.ks) * len(exp.retrievers)
+            n_conds = len(exp.ks) * len(exp.retrievers) * n_onto * n_models
         else:
-            n_conds = len(exp.ns) * len(exp.retrievers)
+            n_conds = len(exp.ns) * len(exp.retrievers) * n_onto * n_models
         gens = n_conds * n_items * exp.repeats
         return n_conds, gens, gens  # judge 与生成一一对应（生成失败才跳过）
 

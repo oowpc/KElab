@@ -562,6 +562,12 @@ def render_report(
         store, run_id, exp, items_by_id, domain.review_sample_rate,
         out_dir / "review_sample.csv",
     )
+    # 试跑/中断：按实际评估题数（distinct item_id），MDE 与题数不虚高
+    evaluated_items = store.n_distinct_items(run_id)
+    if evaluated_items:
+        provisional = provisional or evaluated_items < 50
+        if exp.limit_items and evaluated_items <= exp.limit_items:
+            provisional = True
 
     axis = "k" if exp.kind == "k" else "n"
     primary_model = (exp.gen_models or [None])[0]  # 曲线只画主模型；模型对照单列
@@ -617,6 +623,7 @@ def render_report(
         n_review=n_review,
         prereg=prereg,
         primary_model=primary_model,
+        evaluated_items=evaluated_items or None,
     )
     report_path = out_dir / "report.md"
     report_path.write_text(md, encoding="utf-8")
@@ -639,16 +646,19 @@ def _build_markdown(
     n_review: int,
     prereg: dict | None = None,
     primary_model: str | None = None,
+    evaluated_items: int | None = None,
 ) -> str:
     run_info = store.run_info(run_id)
     axis_name = "k" if exp.kind == "k" else "N"
+    n_items = evaluated_items or len(testset)  # 试跑/中断按实际评估题数（MDE 不虚高）
+    models_text = "、".join(exp.gen_models) if exp.gen_models else domain.gen_model
     lines: list[str] = [
         f"# 实验报告：{exp.name}（{axis_name} 扫描）",
         "",
         f"- run_id：`{run_id}`",
-        f"- 领域：{domain.name}　实验类型：{exp.kind}　生成模型：{domain.gen_model}（温度 {domain.gen_temperature}）",
+        f"- 领域：{domain.name}　实验类型：{exp.kind}　生成模型：{models_text}（温度 {domain.gen_temperature}）",
         f"- judge 模型：{domain.judge_model}　重复：{exp.repeats}（种子 {exp.seeds[:exp.repeats]}）",
-        f"- 测试集：{len(testset)} 题　池策略：{exp.pool_strategy}",
+        f"- 测试集：{n_items} 题（实际评估题数）　池策略：{exp.pool_strategy}",
         f"- prompt 模板 md5：`{run_info['prompt_template_md5'] if run_info else '—'}`　"
         f"grammar md5：`{run_info['grammar_md5'] if run_info else '—'}`",
         (f"- 预登记：`v{prereg['version']}` 哈希 `{prereg['prereg_hash']}`"
@@ -663,7 +673,6 @@ def _build_markdown(
     # ---- 解读摘要（规则引擎产出；每条附依据，详见 run 页解读卡）
     from .interpret import final_verdicts, interpret_run, review_agreement
 
-    n_items = len(testset)
     mde = mde_estimate(n_items)
     reviews: dict = {}
     try:
@@ -731,8 +740,6 @@ def _build_markdown(
     lines.append("")
 
     # ---- 统计功效（方案 §5.3：主结论只对 ≥MDE 的差异下判断）
-    n_items = len(testset)
-    mde = mde_estimate(n_items)
     if mde is not None:
         lines += [
             "## 2.1 统计功效（MDE）",
@@ -812,7 +819,7 @@ def _build_markdown(
         "- **判分口径（协议 §7.4）**：语义等价以人工盲评为准（双人独立 + 分歧第三人裁决）；"
         "LLM judge 只作辅助信号，不单独决定 gold 等价",
         "- judge 与生成同源的偏差风险靠该抽检对冲；judge 模型可配置更换",
-        f"- 复现：`python -m kelab.cli run --exp <实验配置> --resume`，"
+        f"- 复现：`python -m kelab.cli run --exp <实验配置>`（同配置重跑即自动断点续跑），"
         f"明细见 `runs/{run_id}/kelab.sqlite`（prompt 全文逐字落库）",
         "",
     ]

@@ -13,7 +13,7 @@ ontology_source = "prompt"
 question_format = "输入：{question}\n\n输出："
 
 [generation]
-# USTC 网关模型（base_url 与 key 走环境变量 NL2KE_BASE_URL / NL2KE_API_KEY）
+# USTC 网关模型（base_url 与 key 首选 configs/api.json「设置」页维护，环境变量兜底）
 model = "deepseek-v4-flash-ascend1"
 temperature = 0.0
 max_concurrency = 4
