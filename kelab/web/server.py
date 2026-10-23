@@ -268,31 +268,29 @@ def make_handler(app: WebApp):
             import io
 
             store = app.open_run(run_id)
-            reviews = app.get_reviews(run_id)      # 最终判定
-            raw = app.get_reviews_raw(run_id)      # 逐评审员明细
+            finals = app.get_reviews(run_id)      # 最终判定（C>一致>单人）
+            raw = app.get_reviews_raw(run_id)      # 全部逐评审员行（含分歧证据）
             buf = io.StringIO()
             writer = csv.writer(buf)
-            writer.writerow(["gen_id", "condition_id", "item_id", "rep",
-                             "llm_verdict", "final_human_verdict", "reviewer_A", "reviewer_B",
-                             "reviewer_C", "human_note", "reviewed_at"])
-            by_gen: dict[int, dict] = {}
+            writer.writerow(["gen_id", "condition_id", "item_id", "rep", "llm_verdict",
+                             "reviewer", "human_verdict", "human_note", "blind",
+                             "is_final", "reviewed_at"])
             for r in raw:
-                by_gen.setdefault(r["gen_id"], {})[r["reviewer"]] = r
-            for gen_id, rev in sorted(reviews.items()):
                 row = store._conn.execute(
                     "SELECT g.condition_id, g.item_id, g.rep, j.llm_verdict"
                     " FROM generations g LEFT JOIN judgments j ON j.gen_id=g.gen_id"
-                    " WHERE g.gen_id=?", (gen_id,),
+                    " WHERE g.gen_id=?", (r["gen_id"],),
                 ).fetchone()
-                if row:
-                    rs = by_gen.get(gen_id, {})
-                    rv_a = rs["A"]["human_verdict"] if rs.get("A") else ""
-                    rv_b = rs["B"]["human_verdict"] if rs.get("B") else ""
-                    rv_c = rs["C"]["human_verdict"] if rs.get("C") else ""
-                    writer.writerow([gen_id, row["condition_id"], row["item_id"], row["rep"],
-                                     row["llm_verdict"], rev["human_verdict"],
-                                     rv_a, rv_b, rv_c,
-                                     rev["human_note"], rev["reviewed_at"]])
+                fin = finals.get(r["gen_id"])
+                is_final = bool(fin and fin["reviewer"] == r["reviewer"]
+                                and fin["human_verdict"] == r["human_verdict"])
+                writer.writerow([
+                    r["gen_id"], row["condition_id"] if row else "", row["item_id"] if row else "",
+                    row["rep"] if row else "", row["llm_verdict"] if row else "",
+                    r["reviewer"], r["human_verdict"], r["human_note"],
+                    r["blind"] if isinstance(r, dict) else r["blind"],
+                    int(is_final), r["reviewed_at"],
+                ])
             store.close()
             self._send(b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8"),
                        "text/csv; charset=utf-8")

@@ -132,12 +132,19 @@ def process_one(
             )
 
         if condition.retriever == "frozen":
-            # 协议 §7.2：预先冻结的嵌套示例序列，全题共用同一套；
-            # LOO 下从全局序列剔除题目自身（防自泄露），再取前 k 条
+            # 协议 §7.2：预先冻结的嵌套示例序列，全题共用同一套、顺序固定。
+            # LOO：从全局序列剔除题目自身（防自泄露）；
+            # N 实验：只在当前 N 子集成员内取（保持嵌套一致与 N 的控制语义）。
             full = res.testset if isinstance(res.pools, dict) else pool
             order = retrieve._retrieve_frozen(full, seed)
-            picked = [x for x in order if x.item_id != item.item_id][: condition.k]
-            retrieval = retrieve.RetrievalResult(items=picked)
+            pool_ids = {p.item_id for p in pool}  # N 实验时 pool 已是嵌套子集
+            picked = [x for x in order
+                      if x.item_id != item.item_id and x.item_id in pool_ids][: condition.k]
+            warning = None
+            if condition.k > len(picked):
+                warning = (f"pool_smaller_than_k: frozen 序列可用 {len(picked)} 条 < k="
+                           f"{condition.k}，返回全部")
+            retrieval = retrieve.RetrievalResult(items=picked, warning=warning)
         else:
             retrieval = retrieve.retrieve(
                 condition.retriever, item, pool, condition.k, seed

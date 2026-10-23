@@ -92,12 +92,18 @@ def post_prereg_save(app: WebApp, form: dict) -> str:
         return "改动已登记内容必须填写变更理由"
     try:
         delta = float(form["delta"][0])
+        if delta <= 0 or delta > 1:
+            return "δ 必须在 (0, 1]（它是比例阈值，如 0.05）"
     except (ValueError, IndexError, KeyError):
         return "δ 必须是数字"
     qg_text = form.get("quality_gate", [""])[0].strip()
     try:
         quality_gate = float(qg_text) if qg_text else None
         review_rate = float(form.get("review_rate", ["0.1"])[0])
+        if quality_gate is not None and not 0.0 <= quality_gate <= 1.0:
+            return "质量门槛须在 [0, 1]"
+        if not 0.0 < review_rate <= 1.0:
+            return "抽检比例须在 (0, 1]"
     except ValueError:
         return "质量门槛/抽检比例必须是数字"
     from ..config import file_md5

@@ -106,10 +106,15 @@ def build_share_html(
     mde = mde_estimate(testset_size)
     reviews: dict = {}
     try:
-        reviews = {r["gen_id"]: r for r in
-                   store._conn.execute("SELECT * FROM reviews").fetchall()}
+        from .interpret import final_verdicts
+        rows = store._conn.execute("SELECT * FROM reviews_v2").fetchall()
+        reviews = final_verdicts(rows)
     except Exception:
-        pass
+        try:
+            reviews = {r["gen_id"]: r for r in
+                       store._conn.execute("SELECT * FROM reviews").fetchall()}
+        except Exception:
+            pass
     agree, total_reviewed = review_agreement(store, run_id, reviews)
     findings = interpret_run(metrics, exp, mde,
                              review_agree=agree, review_total=total_reviewed)

@@ -199,11 +199,20 @@ class WebApp:
                 "CREATE TABLE IF NOT EXISTS reviews ("
                 " gen_id INTEGER PRIMARY KEY, human_verdict TEXT, human_note TEXT, reviewed_at TEXT)"
             )
+            # 协议 §7.4 双盲评表：Web 端自建（run 可能从未以写模式打开、没赶上迁移）
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS reviews_v2 ("
+                " gen_id INTEGER NOT NULL, reviewer TEXT NOT NULL DEFAULT 'A',"
+                " human_verdict TEXT, human_note TEXT, blind INTEGER DEFAULT 1,"
+                " reviewed_at TEXT, PRIMARY KEY(gen_id, reviewer))")
         return conn
 
     def save_review(self, run_id: str, gen_id: int, verdict: str, note: str,
                     reviewer: str = "A", blind: bool = True) -> None:
-        """协议 §7.4：评审员 A/B 独立盲评，分歧由 C 裁决。同 (gen_id, reviewer) 覆盖。"""
+        """协议 §7.4：评审员 A/B 独立盲评，分歧由 C 裁决。同 (gen_id, reviewer) 覆盖。
+        空 verdict（表单「未判定」）拒绝保存。"""
+        if not verdict:
+            return
         conn = self._reviews_conn(run_id, create=True)
         try:
             with conn:
@@ -217,14 +226,27 @@ class WebApp:
             conn.close()
 
     def get_reviews_raw(self, run_id: str) -> list:
-        """reviews_v2 全部行（每条含 reviewer）。"""
+        """reviews_v2 全部行（含 reviewer）；v2 空而旧表有数据时回退旧表（评审员记 A）。"""
         conn = self._reviews_conn(run_id)
         try:
             try:
-                return conn.execute(
+                rows = conn.execute(
                     "SELECT * FROM reviews_v2 ORDER BY gen_id, reviewer").fetchall()
             except sqlite3.OperationalError:
-                return []  # 表还没建
+                rows = []
+            if rows:
+                return rows
+            # 回退：旧 reviews 表（无 reviewer 列，视作 A 盲评）
+            try:
+                legacy = conn.execute("SELECT * FROM reviews").fetchall()
+            except sqlite3.OperationalError:
+                return []
+            return [
+                {"gen_id": r["gen_id"], "reviewer": "A",
+                 "human_verdict": r["human_verdict"], "human_note": r["human_note"],
+                 "blind": 0, "reviewed_at": r["reviewed_at"]}
+                for r in legacy
+            ]
         finally:
             conn.close()
 
@@ -236,9 +258,11 @@ class WebApp:
         return final_verdicts(self.get_reviews_raw(run_id))
 
     def adjudication_pending(self, run_id: str) -> list[int]:
-        """A、B 已判且分歧、C 未裁的 gen_id 列表（第三人裁决队列）。"""
+        """A、B 已判且分歧、C 未裁的 gen_id 列表（第三人裁决队列）。空判定不算判。"""
         by_gen: dict[int, dict] = {}
         for r in self.get_reviews_raw(run_id):
+            if not r["human_verdict"]:
+                continue
             by_gen.setdefault(r["gen_id"], {})[r["reviewer"]] = r
         out = []
         for gen_id, rs in by_gen.items():
@@ -306,6 +330,7 @@ class WebApp:
     def _render_report_sync(self, run_id: str, exp) -> None:
         from ..config import load_domain
         from ..datasets import read_jsonl
+        from ..prereg import load_prereg
         from ..report import render_report
 
         domain = load_domain(self.root / "configs" / "domains" / f"{exp.domain}.toml")
@@ -315,6 +340,7 @@ class WebApp:
             render_report(
                 store, run_id, exp, domain, testset, self.results_dir / run_id,
                 provisional=len(testset) < 50,  # 小样本自动加冒烟声明
+                prereg=load_prereg(self.root, exp.name),
             )
         finally:
             store.close()

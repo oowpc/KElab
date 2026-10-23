@@ -26,6 +26,7 @@ from .aggregate import (
     mde_estimate,
     write_metrics_csv,
 )
+from .stats import knee_two_gains
 from .config import DomainConfig, ExperimentConfig
 from .datasets import Item
 from .store import Store
@@ -37,10 +38,11 @@ INK = "#0b0b0b"
 INK2 = "#52514e"
 MUTED = "#898781"
 
-SERIES_ORDER = ["random", "bm25", "oracle", "dense", "hybrid"]
+SERIES_ORDER = ["random", "bm25", "frozen", "oracle", "dense", "hybrid"]
 SERIES_COLOR = {
     "random": "#2a78d6",
     "bm25": "#eb6834",
+    "frozen": "#6250d6",
     "oracle": "#1baf7a",
     "dense": "#eda100",
     "hybrid": "#e87ba4",
@@ -48,6 +50,7 @@ SERIES_COLOR = {
 SERIES_LABEL = {
     "random": "random",
     "bm25": "BM25",
+    "frozen": "frozen（冻结序列）",
     "oracle": "oracle（上界）",
     "dense": "dense",
     "hybrid": "hybrid",
@@ -546,6 +549,7 @@ def render_report(
     testset: list[Item],
     out_dir: Path,
     provisional: bool = False,
+    prereg: dict | None = None,
 ) -> Path:
     """生成 results/<run_id>/ 下的 metrics.csv、图与 report.md。"""
     out_dir = Path(out_dir)
@@ -561,6 +565,7 @@ def render_report(
 
     axis = "k" if exp.kind == "k" else "n"
     primary_model = (exp.gen_models or [None])[0]  # 曲线只画主模型；模型对照单列
+    delta_eff = (prereg or {}).get("delta", exp.knee_threshold)  # 预登记优先（§7.5）
     axis_metrics = [
         cm for cm in metrics
         if cm.kind == exp.kind and cm.gen_model in (None, primary_model)
@@ -574,10 +579,10 @@ def render_report(
         cms.sort(key=_axis_value)
         means = [_mean_std(cm, "semantic")[0] for cm in cms]
         if all(m is not None for m in means) and len(means) >= 2:
-            knee_by_retriever[retriever] = detect_knee(
+            knee_by_retriever[retriever] = knee_two_gains(
                 [float(_axis_value(cm)) for cm in cms],
                 [float(m) for m in means],
-                threshold=exp.knee_threshold,
+                delta_eff,
             )
     main_retriever = "bm25" if "bm25" in knee_by_retriever else next(iter(knee_by_retriever), None)
     knee = knee_by_retriever.get(main_retriever) if main_retriever else None
@@ -610,6 +615,8 @@ def render_report(
             "model": (fig_model.name, have_model),
         },
         n_review=n_review,
+        prereg=prereg,
+        primary_model=primary_model,
     )
     report_path = out_dir / "report.md"
     report_path.write_text(md, encoding="utf-8")
@@ -630,6 +637,8 @@ def _build_markdown(
     provisional: bool,
     figures: dict[str, tuple[str, bool]],
     n_review: int,
+    prereg: dict | None = None,
+    primary_model: str | None = None,
 ) -> str:
     run_info = store.run_info(run_id)
     axis_name = "k" if exp.kind == "k" else "N"
@@ -642,6 +651,10 @@ def _build_markdown(
         f"- 测试集：{len(testset)} 题　池策略：{exp.pool_strategy}",
         f"- prompt 模板 md5：`{run_info['prompt_template_md5'] if run_info else '—'}`　"
         f"grammar md5：`{run_info['grammar_md5'] if run_info else '—'}`",
+        (f"- 预登记：`v{prereg['version']}` 哈希 `{prereg['prereg_hash']}`"
+         f"（δ={prereg['delta']}，质量门槛={prereg.get('quality_gate') or '未设'}，"
+         f"抽检={prereg.get('review_rate')}，决策人={prereg['actor']}）"
+         if prereg else "- 预登记：未登记（报告阈值取实验配置；协议要求先登记再看数）"),
         "",
     ]
     if provisional:
@@ -701,17 +714,20 @@ def _build_markdown(
     lines.append("")
 
     # ---- 曲线与拐点（协议 §7.5：连续两档增益<δ + 配对 CI 未达最小实际差异 + δ 敏感性）
+    delta_eff = (prereg or {}).get("delta", exp.knee_threshold)  # 预登记优先（§7.5）
     lines += [f"## 2. {axis_name}–质量曲线与拐点", ""]
     for key, caption in (("quality", "主图"), ("marginal", "边际增益")):
         fname, ok = figures[key]
         if ok:
             lines += [f"![{caption}]({fname})", ""]
-    lines += _knee_section(store, run_id, exp, metrics, mde)
+    lines += _knee_section(store, run_id, exp, metrics, mde,
+                           primary_model=primary_model, delta=delta_eff)
     lines.append("")
 
     # ---- 选择规则与停止线（协议 §7.6）
     lines += ["### 选择规则与停止线", ""]
-    lines += _selection_rule(metrics, exp)
+    lines += _selection_rule(metrics, exp, primary_model=primary_model,
+                             quality_gate=(prereg or {}).get("quality_gate"))
     lines.append("")
 
     # ---- 统计功效（方案 §5.3：主结论只对 ≥MDE 的差异下判断）
@@ -804,11 +820,12 @@ def _build_markdown(
 
 
 def _item_scores(store: Store, run_id: str, condition_id: str) -> dict[str, float]:
+    """同题得分表：rep=0（预登记种子）+ 确定性排序——避免乱序重复覆盖造成的漂移。"""
     rows = store._conn.execute(
         "SELECT g.item_id, j.llm_score FROM generations g"
         " JOIN judgments j ON j.gen_id=g.gen_id"
-        " WHERE g.run_id=? AND g.condition_id=? AND g.status='ok'"
-        " AND j.llm_score IS NOT NULL", (run_id, condition_id),
+        " WHERE g.run_id=? AND g.condition_id=? AND g.status='ok' AND g.rep=0"
+        " AND j.llm_score IS NOT NULL ORDER BY g.gen_id", (run_id, condition_id),
     ).fetchall()
     return {r["item_id"]: r["llm_score"] for r in rows}
 
@@ -816,24 +833,30 @@ def _item_scores(store: Store, run_id: str, condition_id: str) -> dict[str, floa
 def _knee_section(
     store: Store, run_id: str, exp: ExperimentConfig,
     metrics: list[ConditionMetrics], mde: float | None,
+    primary_model: str | None = None,
+    delta: float | None = None,
 ) -> list[str]:
     """协议 §7.5 拐点段：k* = 从某档起连续两个相邻档位边际增益均 < δ，
-    且相邻档配对 CI 未达最小实际差异（MDE）。附 δ 敏感性分析。"""
+    且相邻档配对 CI 未达最小实际差异（MDE）。附 δ 敏感性分析。
+    δ 优先取预登记值（防事后解释），无登记用实验配置。"""
     from .stats import knee_sensitivity, knee_two_gains, paired_diff_ci
 
     axis_name = "k*" if exp.kind == "k" else "N*"
-    delta = exp.knee_threshold
+    delta = delta if delta is not None else exp.knee_threshold
     key = (lambda cm: cm.k) if exp.kind == "k" else (lambda cm: cm.n)
     out: list[str] = []
     seen_retrievers = []
     for cm in metrics:
-        if cm.kind == exp.kind and cm.onto == "full" and cm.retriever not in seen_retrievers:
+        if (cm.kind == exp.kind and cm.onto == "full"
+                and cm.gen_model in (None, primary_model)
+                and cm.retriever not in seen_retrievers):
             seen_retrievers.append(cm.retriever)
     for retriever in SERIES_ORDER:
         if retriever not in seen_retrievers:
             continue
         cms = sorted([cm for cm in metrics
                       if cm.kind == exp.kind and cm.onto == "full"
+                      and cm.gen_model in (None, primary_model)
                       and cm.retriever == retriever], key=key)
         xs = [float(key(cm)) for cm in cms]
         means = [_mean_std(cm, "semantic")[0] for cm in cms]
@@ -878,35 +901,41 @@ def _knee_section(
     return out
 
 
-def _selection_rule(metrics: list[ConditionMetrics], exp: ExperimentConfig) -> list[str]:
+def _selection_rule(
+    metrics: list[ConditionMetrics], exp: ExperimentConfig,
+    primary_model: str | None = None, quality_gate: float | None = None,
+) -> list[str]:
     """协议 §7.6 选择规则：先满足质量门槛与门禁指标，再选达标且成本最低的 k；
-    未设门槛只报曲线，不宣称「最优 k」。"""
-    if exp.quality_gate is None:
+    未设门槛只报曲线，不宣称「最优 k」。门槛优先取预登记值。"""
+    gate = quality_gate if quality_gate is not None else exp.quality_gate
+    if gate is None:
         return [
             "- **选择规则**：未设质量门槛——按协议只报告曲线，不宣称最优 k；"
             "要出选择结论须先在预登记里由决策人设定门槛"
         ]
-    full = [cm for cm in metrics if cm.onto == "full" and cm.kind == exp.kind]
+    full = [cm for cm in metrics if cm.onto == "full" and cm.kind == exp.kind
+            and cm.gen_model in (None, primary_model)]
     passing = []
     for cm in full:
         sem, _ = _mean_std(cm, "semantic")
         lark, _ = _mean_std(cm, "lark")
         light, _ = _mean_std(cm, "light")
         tok, _ = _mean_std(cm, "prompt_tokens")
-        if (sem is not None and sem >= exp.quality_gate
+        if (sem is not None and sem >= gate
                 and (lark is None or lark >= 1.0) and (light is None or light >= 1.0)):
             passing.append((cm, tok))
     if not passing:
         return [
-            f"- **选择规则**：质量门槛 {exp.quality_gate:.0%} 无档位通过——只报告曲线；"
+            f"- **选择规则**：质量门槛 {gate:.0%} 无档位通过——只报告曲线；"
             "是否降门槛属决策人事项（协议禁止降标准关闭）"
         ]
     passing.sort(key=lambda t: (t[1] if t[1] is not None else float("inf")))
     cm, tok = passing[0]
+    tok_text = f"{tok:.0f}" if tok is not None else "未知"
     return [
-        f"- **选择规则**（质量门槛 {exp.quality_gate:.0%}，门禁全过）：推荐 "
+        f"- **选择规则**（质量门槛 {gate:.0%}，门禁全过）：推荐 "
         f"**{cm.condition_id}**——语义 {_pct(_mean_std(cm, 'semantic')[0])}，"
-        f"prompt tokens {tok:.0f}，达标档中成本最低"
+        f"prompt tokens {tok_text}，达标档中成本最低"
     ]
 
 

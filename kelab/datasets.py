@@ -270,8 +270,15 @@ def split_dataset3(
             else:
                 pool.extend(fam)
         if len(testset) < test_size or len(dev) < dev_size:
-            # 族粒度导致某分区装不满：报出来由人决定（协议不允许拆族）
-            pass
+            # 族粒度导致某分区装不满：协议不允许拆族——大声警告（CI/用户必须看到），
+            # 由人决定调整规模或关掉分组
+            import sys as _sys
+            print(
+                f"⚠️ 题族整族切分装不满：请求 test={test_size}/dev={dev_size}，"
+                f"实际 test={len(testset)}/dev={len(dev)}。"
+                "近重复大族占据了分区名额；请调整规模、换种子或 group_threshold=None 关闭分组。",
+                file=_sys.stderr,
+            )
     key = lambda it: it.item_id
     return (sorted(testset, key=key), sorted(dev, key=key), sorted(pool, key=key))
 

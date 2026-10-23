@@ -182,6 +182,8 @@ def _col_map_for(args: argparse.Namespace) -> dict | None:
 def cmd_prepare(args: argparse.Namespace) -> int:
     domain, ontology, _, grammar_md5 = _load_domain_and_ontology(Path(args.domain))
     xlsx = Path(args.xlsx)
+    if args.dev and not args.split:
+        raise CliError("--dev 需配合 --split 使用（开发集只在三分切分时存在）")
     items = datasets.import_xlsx(xlsx, col_map=_col_map_for(args))
     items, dedupe = datasets.dedupe_items(items)
     if dedupe["dropped_question_dups"] or dedupe["same_ke_groups"]:
@@ -247,6 +249,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def _report_one(exp_path: str, domain_path: Path | None, provisional: bool) -> Path:
+    from .prereg import load_prereg
+
     exp = load_experiment(exp_path)
     domain_path = domain_path or _default_domain_path(exp.domain)
     domain = load_domain(domain_path)
@@ -258,7 +262,7 @@ def _report_one(exp_path: str, domain_path: Path | None, provisional: bool) -> P
     testset = datasets.read_jsonl(exp.testset)
     report_path = render_report(
         store, run_id, exp, domain, testset, Path("results") / run_id,
-        provisional=provisional,
+        provisional=provisional, prereg=load_prereg(Path("."), exp.name),
     )
     store.close()
     return report_path

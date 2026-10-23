@@ -122,10 +122,15 @@ def aggregate_run(
                 alert=std > exp.std_alert and metric not in {"prompt_tokens", "completion_tokens", "latency_ms"},
                 n=len(rep_means),
             )
-        # 语义等价率的逐题 95% CI（协议 §7.4）
+        # 语义等价率的逐题 95% CI（协议 §7.4「按题目计算」：
+        # 先求每题跨重复均值，再对题目集合求 t 区间——不把「题×重复」池化当独立样本）
         from .stats import mean_ci
-        item_scores = [r["llm_score"] for r in ok_rows if r["llm_score"] is not None]
-        cm.semantic_ci = mean_ci(item_scores)
+        by_item: dict[str, list[float]] = {}
+        for r in ok_rows:
+            if r["llm_score"] is not None:
+                by_item.setdefault(r["item_id"], []).append(r["llm_score"])
+        item_means = [statistics.fmean(v) for v in by_item.values()]
+        cm.semantic_ci = mean_ci(item_means)
         out.append(cm)
     return out
 
@@ -199,6 +204,7 @@ def per_seed_knee(
 ) -> dict[int, float | None]:
     """每个 seed（重复）单独算拐点——重采样 N*/k* 一致性检验（验收：相差 ≤1 档）。
     返回 {seed: knee or None（该 seed 无拐点 / 数据不足）}。"""
+    from .stats import knee_two_gains
     by_condition = per_rep_condition_means(store, run_id, retriever=retriever)
     conds = {c["condition_id"]: c for c in store.condition_rows(run_id)
              if c["retriever"] == retriever}
@@ -211,7 +217,7 @@ def per_seed_knee(
         if len(xs) < 2 or len(xs) != len(means):
             out[seed] = None
             continue
-        out[seed] = detect_knee([float(x) for x in xs], means, exp.knee_threshold)
+        out[seed] = knee_two_gains([float(x) for x in xs], means, exp.knee_threshold)
     return out
 
 

@@ -647,6 +647,13 @@ def page_review(app: WebApp, run_id: str, query: dict) -> bytes:
             for it in read_jsonl(testset):
                 gold_by_item[it.item_id] = {"question": it.question, "gold_ke": it.gold_ke}
 
+    if blind and not gen_id and rows:
+        # 盲评防位置泄露：gen_id 按条件分块，能从位置推断 k——
+        # 用固定种子打散展示顺序（A/B/C 看到同一顺序，保证独立判定可比）
+        import random as _random
+        rows = list(rows)
+        _random.Random(f"blind-order:{run_id}").shuffle(rows)
+
     done = sum(1 for r in rows if r["gen_id"] in reviews)
     reviewer_links = " · ".join(
         f"<b>评审员 {r_}</b>" if r_ == reviewer else

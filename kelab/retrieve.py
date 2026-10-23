@@ -262,7 +262,7 @@ def retrieve(
     elif name == "frozen":
         ranked = _retrieve_frozen(pool, seed)
     elif name == "dense":
-        ranked = _retrieve_dense(query)
+        ranked = _retrieve_dense(query, pool)
     elif name == "hybrid":
         ranked = _retrieve_hybrid(query, pool)
     else:

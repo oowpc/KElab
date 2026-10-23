@@ -164,6 +164,31 @@ class MiniExperimentTest(MockServerMixin):
         self.assertIn("op get_expression", rows[0]["prompt_text"])
         self.assertNotIn("op asymptote", rows[0]["prompt_text"])
 
+    def test_frozen_n_experiment_respects_subset(self):
+        """frozen + N 实验：序列只在当前 N 子集内取（N 的控制语义不被穿透）。"""
+        exp = make_exp(kind="n", ns=[1], fixed_k=1, retrievers=["frozen"])
+        res = self.build_resources(self.make_tmpdir(), exp)
+        stats = runner.run_experiment(res)
+        self.assertEqual(4, stats["ok"])  # 1 档 × 2 题 × 2 重复
+        rows = res.store.generation_join_rows("test-run", "n-frozen-n1")
+        for row in rows:
+            ids = __import__("json").loads(row["retrieved_ids"])
+            self.assertEqual(1, len(ids))  # N=1 子集内恰 1 条
+
+    def test_frozen_k_experiment_shared_sequence(self):
+        """frozen + k 实验：所有题共用同一套序列（剔除自身），k 档嵌套。"""
+        exp = make_exp(ks=[1, 2], retrievers=["frozen"])
+        res = self.build_resources(self.make_tmpdir(), exp)
+        runner.run_experiment(res)
+        import json as _json
+        for rep in (0, 1):
+            a = _json.loads(res.store.generation_join_rows(
+                "test-run", "k-frozen-k2")[rep]["retrieved_ids"])
+            b = _json.loads(res.store.generation_join_rows(
+                "test-run", "k-frozen-k2")[1 - rep]["retrieved_ids"])
+            # 两题各自剔除自身后，交集非空（共享同一全局序列）
+            self.assertTrue(set(a) & set(b))
+
     def test_gen_models_dimension(self):
         # 模型对照：gen_models 两个模型 → 条件翻倍，各用各的客户端
         exp = make_exp(gen_models=["gen-model", "gen-model-2"])

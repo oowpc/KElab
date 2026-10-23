@@ -10,8 +10,9 @@ from __future__ import annotations
 import statistics
 from dataclasses import dataclass, field
 
-from .aggregate import ConditionMetrics, detect_knee, marginal_gains
+from .aggregate import ConditionMetrics, marginal_gains
 from .config import ExperimentConfig
+from .stats import knee_two_gains
 
 
 @dataclass
@@ -58,14 +59,15 @@ def interpret_run(
     means = [_mean(cm, "semantic") for cm in cms]
     if all(m is not None for m in means) and len(means) >= 2:
         xs = [_axis(cm) for cm in cms]
-        knee = detect_knee(xs, means, exp.knee_threshold)
+        knee = knee_two_gains(xs, means, exp.knee_threshold)
         gains = marginal_gains(xs, means)
         if knee is not None:
             prev = xs[xs.index(knee) - 1] if knee in xs and xs.index(knee) > 0 else None
             advice = f"性价比最优停在 {prev:g}" if prev is not None else f"{axis_unit} 起步即饱和"
             findings.append(Finding(
                 "good",
-                f"{axis_name}* = {knee:g}（{main}）：超过该档边际增益 < {exp.knee_threshold:.0%}，{advice}",
+                f"{axis_name}* = {knee:g}（{main}）：从该档起连续两档边际增益 < "
+                f"{exp.knee_threshold:.0%}（协议口径），{advice}",
                 f"边际增益序列 {', '.join(f'{g * 100:+.1f}pp' for _, g in gains)}",
             ))
         else:
@@ -80,8 +82,8 @@ def interpret_run(
             else:
                 findings.append(Finding(
                     "info",
-                    f"未出现拐点：各档边际增益均 ≥ {exp.knee_threshold:.0%}，"
-                    f"曲线未饱和，可考虑继续加档",
+                    f"未出现拐点：无连续两档边际增益均 < {exp.knee_threshold:.0%}"
+                    f"（协议口径），曲线未饱和，可考虑继续加档",
                     f"边际增益序列 {', '.join(f'{g * 100:+.1f}pp' for _, g in gains)}",
                 ))
 
@@ -211,9 +213,12 @@ def review_agreement(store, run_id: str, reviews: dict) -> tuple[int, int]:
 
 def final_verdicts(rows: list) -> dict:
     """评审原始行（含 reviewer）→ 最终判定 {gen_id: row}。
-    协议 §7.4：C 裁决 > A/B 一致 > 仅一人已判（A/B 分歧且未裁 → 不进最终集）。"""
+    协议 §7.4：C 裁决 > A/B 一致 > 仅一人已判（A/B 分歧且未裁 → 不进最终集）。
+    空 verdict（表单「未判定」项）视为未判，过滤。"""
     by_gen: dict[int, dict] = {}
     for r in rows:
+        if not r["human_verdict"]:
+            continue  # 空判定不算判定
         by_gen.setdefault(r["gen_id"], {})[r["reviewer"]] = r
     final: dict = {}
     for gen_id, rs in by_gen.items():

@@ -28,9 +28,9 @@ def exp(kind="k", repeats=3):
 
 class InterpretTest(unittest.TestCase):
     def test_knee_gives_stop_advice(self):
-        # 增益 +20,+5,+1 → k*=5（增益在 k=5 首次 <5pp），性价比停在前一档 3
+        # 协议口径：连续两档增益 < δ 才出拐点。增益 +20,+5,+1,+0.2pp → k*=5，停在 3
         metrics = [cm(f"k-bm25-k{k}", "k", k, "bm25", s)
-                   for k, s in ((0, 0.5), (1, 0.7), (3, 0.75), (5, 0.76))]
+                   for k, s in ((0, 0.5), (1, 0.7), (3, 0.75), (5, 0.76), (8, 0.762))]
         findings = interpret_run(metrics, exp(), 0.11)
         texts = "\n".join(f.text for f in findings)
         self.assertIn("k* = 5", texts)
@@ -90,7 +90,7 @@ class InterpretTest(unittest.TestCase):
 
     def test_top_finding_prefers_non_info(self):
         metrics = [cm(f"k-bm25-k{k}", "k", k, "bm25", s)
-                   for k, s in ((0, 0.5), (1, 0.7), (3, 0.75), (5, 0.76))]
+                   for k, s in ((0, 0.5), (1, 0.7), (3, 0.75), (5, 0.76), (8, 0.762))]
         text = top_finding(metrics, exp(), 0.11)
         self.assertIn("k* = 5", text)
 

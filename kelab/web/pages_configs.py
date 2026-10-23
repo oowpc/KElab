@@ -120,7 +120,7 @@ def page_config_edit(app: WebApp, query: dict, message: str = "") -> bytes:
         body.append(_input("fixed_k", e.get("fixed_k", 3), "固定 k（N 实验）", 10))
         body.append("<div style='margin:6px 0'>检索器："
                     + "".join(_checkbox(f"ret_{r}", r in e.get("retrievers", []), r)
-                              for r in ("random", "bm25", "dense", "hybrid", "oracle"))
+                              for r in ("random", "bm25", "frozen", "dense", "hybrid", "oracle"))
                     + "</div>")
         body.append("<div style='margin:6px 0'>"
                     + _checkbox("nested", bool(e.get("nested", True)), "嵌套池（只增不减）") + "</div>")
@@ -226,7 +226,7 @@ def post_config_save(app: WebApp, form: dict) -> str:
     if is_experiment:
         kind = form.get("kind", ["k"])[0] or "k"
         pool_strategy = form.get("pool_strategy", ["loo"])[0] or "loo"
-        retrievers = [r for r in ("random", "bm25", "dense", "hybrid", "oracle")
+        retrievers = [r for r in ("random", "bm25", "frozen", "dense", "hybrid", "oracle")
                       if form.get(f"ret_{r}") == ["on"]]
         flat = {
             "name": form["name"][0], "domain": form["domain"][0], "kind": kind,
