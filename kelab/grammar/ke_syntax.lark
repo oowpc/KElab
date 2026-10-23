@@ -1,0 +1,102 @@
+start: statement (_SEMI statement)* _SEMI?
+
+statement: individual
+
+?individual: output_individual
+           | membership_individual
+           | scoped_individual
+
+output_individual: _OUTPUT _EQ tuple_body (_ORDERBY arith)?
+
+assertion_individual: arith _EQ arith (bin_op arith)?
+membership_individual: arith _COLON arith
+
+scoped_individual: predicate where_clause?
+where_clause: _WHERE _LPAR tuple_body _RPAR
+
+?predicate: pred_term (OR pred_term)*   -> or_expr
+?pred_term: pred_atom (AND pred_atom)*  -> and_expr
+?pred_atom: _NOT pred_atom          -> not_expr
+         | arith_individual
+         | assertion_individual
+
+arith_individual: arith (bin_op arith)?
+
+tuple_body: individual (_COMMA individual)*
+
+bin_op: GT | LT | GTE | LTE | NEQ | IN
+
+?arith: union_expr ((PLUS | MINUS) union_expr)*
+?union_expr: term (UNION term)*
+?term: unary ((STAR | SLASH) unary)*
+?unary: MINUS unary        -> neg
+      | postfix
+
+?postfix: primary postfix_suffix*
+postfix_suffix: op_call_suffix
+              | replacement_suffix
+
+op_call_suffix: _LPAR tuple_body? _RPAR
+replacement_suffix: _LSQB tuple_body? _RSQB
+
+?primary: comprehension
+        | schema_term
+        | set_display
+        | tuple
+        | literal
+        | NAME                -> name_ref
+        | _LPAR individual _RPAR
+
+tuple: _LPAR individual _COMMA _RPAR
+     | _LPAR individual _COMMA tuple_body _COMMA? _RPAR
+comprehension: _LBRACE tuple_body _PIPE tuple_body _RBRACE
+schema_term: _COLON NAME
+set_display: _LBRACE tuple_body _RBRACE
+literal: STRING
+       | FLOAT
+       | INTEGER
+       | NULL
+
+_OUTPUT: "output"
+_WHERE: "where"
+_ORDERBY: "OrderBy"
+AND: "AND"
+OR: "OR"
+UNION: "UNION"
+_NOT: "NOT"
+
+_EQ: "="
+GTE: ">="
+LTE: "<="
+NEQ: "!=" | "\\!="
+IN: "IN"
+GT: ">"
+LT: "<"
+_COLON: ":"
+PLUS: "+"
+MINUS: "-"
+STAR: "*"
+SLASH: "/"
+_COMMA: ","
+_PIPE: "|"
+_SEMI: ";"
+_LPAR: "("
+_RPAR: ")"
+_LSQB: "["
+_RSQB: "]"
+_LBRACE: "{"
+_RBRACE: "}"
+
+NAME: /[A-Za-z\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*/
+FLOAT: /[0-9]+\.[0-9]*/
+INTEGER: /[0-9]+/
+NULL: "NULL"
+STRING: /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/
+
+COMMENT: /#[^\n]*/ | /\/\/[^\n]*/ | /--[^\n]*/
+
+%import common.NEWLINE
+%import common.WS_INLINE
+%ignore WS_INLINE
+%ignore NEWLINE
+%ignore COMMENT

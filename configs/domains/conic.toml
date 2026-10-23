@@ -1,0 +1,31 @@
+# conic（圆锥曲线 / Lean 数学题）领域配置
+# 本体权威来源 = prompt 模板内嵌的 concepts/operators 代码块
+# （conic_onto.json 是 CamelCase 命名体系，与 gold KE 的 snake_case 不符，不进关键路径）
+
+[domain]
+name = "conic"
+# 平台内嵌语法（kelab/grammar/ke_syntax.lark，与 KE-matcher 版逐字一致，md5 锁定）
+# 如需指向外部上游版本，改为绝对路径并同步更新 md5（或留空保存时自动重算）
+grammar = "kelab/grammar/ke_syntax.lark"
+grammar_md5 = "cefad34d71fb90c4dafb21908b7034e1"
+prompt_template = "NL2KE_Prompt.md"
+ontology_source = "prompt"
+question_format = "输入：{question}\n\n输出："
+
+[generation]
+# USTC 网关模型（base_url 与 key 走环境变量 NL2KE_BASE_URL / NL2KE_API_KEY）
+model = "deepseek-v4-flash-ascend1"
+temperature = 0.0
+max_concurrency = 4
+max_retries = 3
+timeout = 120.0
+
+[judge]
+# judge 用 qwen3.8-reasoner：不同家族，对冲 judge 与生成同源偏差；judge 量小可承受
+model = "qwen3.8-reasoner"
+review_sample_rate = 0.10
+# score_map 默认 { equivalent = 1.0, minor = 0.5, different = 0.0 }
+
+[execution]
+enabled = false
+ke2sql_cmd = ""

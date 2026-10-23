@@ -1,0 +1,17 @@
+# 冒烟实验：模型对照（k 方案 C 对照 P0）
+# 同一批题、同种子下双模型配对：deepseek-flash（小）vs deepseek-chat（大），judge 固定
+# 产出：模型对照图（双线）+ 报告「模型对照」段（收益是否随模型能力变化）
+
+[experiment]
+name = "smoke-k-models"
+domain = "conic"
+kind = "k"
+testset = "data/derived/testset20.jsonl"
+pool_strategy = "loo"
+ks = [0, 1, 2, 3, 5, 8, 12]
+retrievers = ["bm25"]
+gen_models = ["deepseek-v4-flash-ascend1", "qwen3.8-chat"]
+repeats = 1
+seeds = [101]
+knee_threshold = 0.05
+std_alert = 0.03

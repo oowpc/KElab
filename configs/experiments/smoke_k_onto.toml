@@ -1,0 +1,18 @@
+# 冒烟实验：本体注入对照（k 方案 B 对照，P0）
+# 同一批题、同种子下配对比较：full（全量本体）vs linked（每题只注入检索相关概念）
+# 产出：报告「本体注入对照」段——逐档语义 Δ + prompt token 节省
+
+[experiment]
+name = "smoke-k-onto"
+domain = "conic"
+kind = "k"
+testset = "data/derived/testset20.jsonl"
+pool_strategy = "loo"
+ks = [0, 1, 2, 3, 5, 8, 12]
+retrievers = ["bm25"]
+onto_modes = ["full", "linked"]
+onto_linking = "retriever"
+repeats = 1
+seeds = [101]
+knee_threshold = 0.05
+std_alert = 0.03

@@ -1,0 +1,17 @@
+# 机密（本地 API 凭据，永不入库）
+configs/api.json
+
+# 运行产物（可复现包在各自 run/results 目录，按需手动打包分享）
+runs/
+results/
+archive/
+data/derived/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 日志与临时文件
+*.log
+_*.py

@@ -1,0 +1,19 @@
+# 冒烟实验：N 扫描（候选池规模 vs KE 生成质量）
+# k=3 固定；嵌套池（同 seed 前缀，5⊂10⊂19 只增不减）
+# 检索器对照：random / bm25 / oracle（oracle = 用 gold 算子集挑示例的上界，诊断瓶颈在池还是在检索器）
+
+[experiment]
+name = "smoke-n"
+domain = "conic"
+kind = "n"
+testset = "data/derived/testset20.jsonl"
+pool_strategy = "loo"
+ns = [5, 10, 19]
+fixed_k = 3
+retrievers = ["random", "bm25", "oracle"]
+nested = true
+repeats = 1
+seeds = [101]
+knee_threshold = 0.05
+std_alert = 0.03
+oracle_gap_threshold = 0.05

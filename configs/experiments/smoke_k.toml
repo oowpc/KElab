@@ -1,0 +1,16 @@
+# 冒烟实验：k 扫描（few-shot 示例数 vs KE 生成质量）
+# LOO 池：每题的候选池 = 其余 19 条 gold KE；k 上限 12（池只有 19）
+# 检索器固定 bm25（k 实验不动检索器）；k=0 时跳过检索（零样本基线）
+
+[experiment]
+name = "smoke-k"
+domain = "conic"
+kind = "k"
+testset = "data/derived/testset20.jsonl"
+pool_strategy = "loo"
+ks = [0, 1, 2, 3, 5, 8, 12]
+retrievers = ["bm25"]
+repeats = 1
+seeds = [101]
+knee_threshold = 0.05
+std_alert = 0.03
