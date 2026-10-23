@@ -115,6 +115,15 @@ def _retrieve_oracle(query: Item, pool: list[Item]) -> list[Item]:
     return _rank([jaccard(it) for it in pool], pool)
 
 
+def _retrieve_frozen(pool: list[Item], seed: int) -> list[Item]:
+    """协议 §7.2 主实验口径：预先冻结的嵌套示例序列——按种子一次性定序，
+    所有题目共用同一序列，k 档取前 k 条（天然嵌套：k=1 ⊂ k=2 ⊂ …）。
+    与题目无关（不做任何检索）。"""
+    order = list(pool)
+    random.Random(f"frozen:{seed}").shuffle(order)
+    return order
+
+
 def rrf_fuse(rankings: list[list[Item]], rrf_k: int = 60) -> list[Item]:
     """Reciprocal Rank Fusion。weights 默认等权。"""
     scores: dict[str, float] = {}
@@ -250,6 +259,8 @@ def retrieve(
         ranked = _retrieve_bm25(query, pool)
     elif name == "oracle":
         ranked = _retrieve_oracle(query, pool)
+    elif name == "frozen":
+        ranked = _retrieve_frozen(pool, seed)
     elif name == "dense":
         ranked = _retrieve_dense(query)
     elif name == "hybrid":

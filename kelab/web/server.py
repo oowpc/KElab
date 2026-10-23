@@ -19,6 +19,8 @@ from .pages_annotate import (page_annotate, page_annotate_draft, post_annotate_d
 from .pages_prompts import (page_prompt_diff, page_prompt_edit, page_prompt_history,
                             page_prompt_preview, page_prompts, post_prompt_restore,
                             post_prompt_save)
+from .pages_matrix import matrix_csv, page_matrix
+from .pages_prereg import page_prereg, page_prereg_edit, post_prereg_save
 from .pages_runs import (_failure_categories, page_failures, page_gens, page_log,
                          page_review, page_run, page_runs)
 from .pages_settings import (page_settings, post_settings_clear, post_settings_save,
@@ -72,6 +74,14 @@ def make_handler(app: WebApp):
                     return self._send(page_configs(app, query.get("msg", [""])[0]))
                 if path == "/settings":
                     return self._send(page_settings(app, query.get("msg", [""])[0]))
+                if path == "/prereg":
+                    return self._send(page_prereg(app, query))
+                if path == "/prereg/edit":
+                    return self._send(page_prereg_edit(app, query))
+                if path == "/matrix":
+                    return self._send(page_matrix(app))
+                if path == "/matrix.csv":
+                    return self._send(matrix_csv(app), "text/csv; charset=utf-8")
                 if path == "/configs/new":
                     q = dict(query)
                     q["new"] = [query.get("type", query.get("kind", [""]))[0]]
@@ -131,8 +141,14 @@ def make_handler(app: WebApp):
                         int(form["gen_id"][0]),
                         form.get("human_verdict", [""])[0],
                         form.get("human_note", [""])[0],
+                        reviewer=form.get("reviewer", ["A"])[0],
+                        blind=form.get("blind", ["1"])[0] == "1",
                     )
-                    return self._redirect(f"/run/{run_id}/review?gen_id={form['gen_id'][0]}")
+                    reviewer = form.get("reviewer", ["A"])[0]
+                    blind = form.get("blind", ["1"])[0]
+                    return self._redirect(
+                        f"/run/{run_id}/review?gen_id={form['gen_id'][0]}"
+                        f"&reviewer={reviewer}&blind={blind}")
                 if parsed.path == "/launch":
                     limit_text = form.get("limit", [""])[0].strip()
                     try:
@@ -220,6 +236,9 @@ def make_handler(app: WebApp):
                 if parsed.path == "/settings/clear":
                     msg = post_settings_clear(app)
                     return self._redirect(f"/settings?msg={urllib.parse.quote(msg)}")
+                if parsed.path == "/prereg/save":
+                    msg = post_prereg_save(app, form)
+                    return self._redirect(f"/prereg?msg={urllib.parse.quote(msg)}")
                 self._send(b"<h1>404</h1>", status=404)
             except Exception as exc:
                 self._send(
@@ -249,11 +268,16 @@ def make_handler(app: WebApp):
             import io
 
             store = app.open_run(run_id)
-            reviews = app.get_reviews(run_id)
+            reviews = app.get_reviews(run_id)      # 最终判定
+            raw = app.get_reviews_raw(run_id)      # 逐评审员明细
             buf = io.StringIO()
             writer = csv.writer(buf)
             writer.writerow(["gen_id", "condition_id", "item_id", "rep",
-                             "llm_verdict", "human_verdict", "human_note", "reviewed_at"])
+                             "llm_verdict", "final_human_verdict", "reviewer_A", "reviewer_B",
+                             "reviewer_C", "human_note", "reviewed_at"])
+            by_gen: dict[int, dict] = {}
+            for r in raw:
+                by_gen.setdefault(r["gen_id"], {})[r["reviewer"]] = r
             for gen_id, rev in sorted(reviews.items()):
                 row = store._conn.execute(
                     "SELECT g.condition_id, g.item_id, g.rep, j.llm_verdict"
@@ -261,8 +285,13 @@ def make_handler(app: WebApp):
                     " WHERE g.gen_id=?", (gen_id,),
                 ).fetchone()
                 if row:
+                    rs = by_gen.get(gen_id, {})
+                    rv_a = rs["A"]["human_verdict"] if rs.get("A") else ""
+                    rv_b = rs["B"]["human_verdict"] if rs.get("B") else ""
+                    rv_c = rs["C"]["human_verdict"] if rs.get("C") else ""
                     writer.writerow([gen_id, row["condition_id"], row["item_id"], row["rep"],
                                      row["llm_verdict"], rev["human_verdict"],
+                                     rv_a, rv_b, rv_c,
                                      rev["human_note"], rev["reviewed_at"]])
             store.close()
             self._send(b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8"),

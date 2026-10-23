@@ -559,27 +559,39 @@ REVIEW_VERDICTS = [
 ]
 
 
-def _review_form(run_id: str, r, review, item: dict) -> str:
+def _review_form(run_id: str, r, review, item: dict,
+                 reviewer: str = "A", blind: bool = True) -> str:
     current = review["human_verdict"] if review else ""
     opts = "".join(
         f"<option value='{v}' {'selected' if v == current else ''}>{t}</option>"
         for v, t in REVIEW_VERDICTS
     )
     note = review["human_note"] if review else ""
+    if blind:
+        # 盲评（协议 §7.4）：标注者不知道 k、模型配置与 judge 结论——只给题目/gold/生成
+        head = f"#{r['gen_id']} · rep{r['rep']}（盲评：不显示条件与 judge 结论）"
+        judge_part = ""
+    else:
+        head = (f"#{r['gen_id']} {ESC(r['condition_id'])} · {ESC(r['item_id'])} · rep{r['rep']} "
+                f"{verdict_chip(r['llm_verdict'])}")
+        judge_part = (f"<div class='rationale'>judge：{ESC(r['llm_verdict'] or '—')} — "
+                      f"{ESC(r['llm_rationale'] or '')}</div>")
+    done_chip = chip('已判定', 'ok') if current else ""
     return f"""
 <div class='card'>
 <details {'open' if not current else ''}>
-<summary>#{r['gen_id']} {ESC(r['condition_id'])} · {ESC(r['item_id'])} · rep{r['rep']}
-  {verdict_chip(r['llm_verdict'])} {chip('已人工判定', 'ok') if current else ''}</summary>
+<summary>{head} {done_chip}</summary>
 <div class='grid2'>
-  <div><div class='muted'>题目</div><div class='ke-box'>{ESC(item.get('question', '—'))}</div>
-  <div class='muted'>gold KE</div><div class='ke-box mono'>{ESC(item.get('gold_ke', '—'))}</div></div>
-  <div><div class='muted'>生成 KE</div><div class='ke-box mono'>{ESC(r['ke_text'] or '—')}</div>
-  <div class='rationale'>judge：{ESC(r['llm_verdict'] or '—')} — {ESC(r['llm_rationale'] or '')}</div></div>
+  <div><div class='label'>题目</div><div class='ke-box'>{ESC(item.get('question', '—'))}</div>
+  <div class='label'>gold KE</div><div class='ke-box mono'>{ESC(item.get('gold_ke', '—'))}</div></div>
+  <div><div class='label'>生成 KE</div><div class='ke-box mono'>{ESC(r['ke_text'] or '—')}</div>
+  {judge_part}</div>
 </div>
 <form method='post' action='/review'>
   <input type='hidden' name='run_id' value='{ESC(run_id)}'>
   <input type='hidden' name='gen_id' value='{r['gen_id']}'>
+  <input type='hidden' name='reviewer' value='{ESC(reviewer)}'>
+  <input type='hidden' name='blind' value='{'1' if blind else '0'}'>
   <select name='human_verdict'>{opts}</select>
   <input type='text' name='human_note' placeholder='备注（错误类型/原因）' value='{ESC(note or '')}' style='width:50%'>
   <button>保存</button>
@@ -601,7 +613,10 @@ def page_review(app: WebApp, run_id: str, query: dict) -> bytes:
             ).review_sample_rate
         except Exception:
             pass
-    reviews = app.get_reviews(run_id)
+    reviews = app.get_reviews(run_id)  # 最终判定视图
+    raw_reviews = app.get_reviews_raw(run_id)
+    reviewer = query.get("reviewer", ["A"])[0].upper()[:1] or "A"
+    blind = query.get("blind", ["1"])[0] != "0"
 
     gen_id = query.get("gen_id", [""])[0]
     rows = []
@@ -633,14 +648,48 @@ def page_review(app: WebApp, run_id: str, query: dict) -> bytes:
                 gold_by_item[it.item_id] = {"question": it.question, "gold_ke": it.gold_ke}
 
     done = sum(1 for r in rows if r["gen_id"] in reviews)
+    reviewer_links = " · ".join(
+        f"<b>评审员 {r_}</b>" if r_ == reviewer else
+        f"<a href='/run/{run_id}/review?reviewer={r_}&blind={'1' if blind else '0'}'>评审员 {r_}</a>"
+        for r_ in ("A", "B", "C")
+    )
+    blind_link = (f"<a href='/run/{run_id}/review?reviewer={reviewer}&blind=0'>关闭盲评</a>"
+                  if blind else
+                  f"<a href='/run/{run_id}/review?reviewer={reviewer}&blind=1'>开启盲评</a>")
     body = [
         f"<h1>{ESC(run_id)} · 人工抽检队列</h1>",
         f"<div class='card'>按条件分层等距抽样（约 {rate:.0%}），共 {len(rows)} 条，"
-        f"已判定 {done} 条。判完可用 <a href='/run/{run_id}/review.csv'>导出 CSV</a>。"
-        f"判定口径与 report 的人工抽检一致：正确 / 基本正确 / 错误 / 无法判定。</div>",
+        f"已判定 {done} 条。当前身份：{reviewer_links}　|　{blind_link}"
+        f"（盲评=不显示 k/模型/judge 结论，协议 §7.4）<br>"
+        f"双人独立盲评 + 第三人裁决：A/B 分别判完同一批，分歧自动进 C 的裁决队列。"
+        f"判完可 <a href='/run/{run_id}/review.csv'>导出 CSV</a>。</div>",
     ]
 
-    # 人工 vs judge 一致率（10% 抽检的目的：校准 judge 可信度）
+    # 裁决队列：A/B 分歧且 C 未裁
+    pending_c = app.adjudication_pending(run_id)
+    if pending_c:
+        links = " ".join(
+            f"<a href='/run/{run_id}/review?gen_id={g}&reviewer=C'>#{g}</a>"
+            for g in pending_c
+        )
+        body.append(
+            f"<div class='card' style='border-left:3px solid var(--warn)'>"
+            f"<b>待第三人裁决（C）：{len(pending_c)} 条</b>（A/B 判定不一致）{links}</div>"
+        )
+
+    # 评审一致性（A vs B）+ judge 对照（最终判定 vs judge）
+    by_gen: dict[int, dict] = {}
+    for r in raw_reviews:
+        by_gen.setdefault(r["gen_id"], {})[r["reviewer"]] = r
+    ab_both = [(rs["A"], rs["B"]) for rs in by_gen.values() if "A" in rs and "B" in rs]
+    if ab_both:
+        ab_agree = sum(1 for a, b in ab_both if a["human_verdict"] == b["human_verdict"])
+        body.append(
+            f"<div class='card'><b>评审一致性（A vs B，协议要报）</b>："
+            f"{ab_agree}/{len(ab_both)}（{ab_agree / len(ab_both):.0%}）</div>"
+        )
+
+    # 人工 vs judge 一致率（judge 校准）
     human_to_llm = {"correct": "equivalent", "acceptable": "minor", "wrong": "different"}
     compared, agree, disagree = 0, 0, []
     for r in rows:
@@ -648,7 +697,7 @@ def page_review(app: WebApp, run_id: str, query: dict) -> bytes:
         if not review or not review["human_verdict"] or not r["llm_verdict"]:
             continue
         mapped = human_to_llm.get(review["human_verdict"])
-        if mapped is None:  # 无法判定不参与一致率
+        if mapped is None:
             continue
         compared += 1
         if mapped == r["llm_verdict"]:
@@ -658,18 +707,20 @@ def page_review(app: WebApp, run_id: str, query: dict) -> bytes:
     if compared:
         pct = agree / compared * 100
         body.append(
-            f"<div class='card'><b>人工 vs judge 一致率</b>：{agree}/{compared}（{pct:.0f}%）"
+            f"<div class='card'><b>人工 vs judge 一致率</b>（judge 仅辅助信号）："
+            f"{agree}/{compared}（{pct:.0f}%）"
             + (f"，分歧 {len(disagree)} 条：" if disagree else "，无分歧 ✓")
             + " ".join(
-                f"<a href='/run/{run_id}/review?gen_id={r['gen_id']}'>#{r['gen_id']}</a>"
+                f"<a href='/run/{run_id}/review?gen_id={r['gen_id']}&blind=0'>#{r['gen_id']}</a>"
                 f"(judge={r['llm_verdict']}/人工={rev['human_verdict']})"
                 for r, rev in disagree[:12]
             )
             + "<br><span class='muted'>口径：正确≈equivalent、基本正确≈minor、错误≈different；"
-            "「无法判定」不参与。一致率过低说明 judge 判分需换模型或改 judge prompt。</span></div>"
+            "「无法判定」不参与。协议口径：语义等价以人工盲评为准，LLM judge 只作辅助信号。</span></div>"
         )
     body.extend(
-        _review_form(run_id, r, reviews.get(r["gen_id"]), gold_by_item.get(r["item_id"], {}))
+        _review_form(run_id, r, by_gen.get(r["gen_id"], {}).get(reviewer),
+                     gold_by_item.get(r["item_id"], {}), reviewer=reviewer, blind=blind)
         for r in rows
     )
     store.close()

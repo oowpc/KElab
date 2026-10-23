@@ -144,10 +144,10 @@ class NewFeaturesTest(MockServerMixin, unittest.TestCase):
         self.assertEqual("改了 judge prompt v2", runs[self.run_id]["note"])
 
     def test_reviews_trigger_chart_rerender(self):
-        # 先出图到 fresh，再新增一条人工判定 → 应重新触发渲染（不是 fresh）
-        self.assertEqual("rendering", self.app.maybe_render_charts(self.run_id, sync=True))
-        self.assertEqual("fresh", self.app.maybe_render_charts(self.run_id, sync=True))
-        self.app.save_review(self.run_id, 1, "correct", "校准")
+        # 先出图到稳定态，再新增一条人工判定 → 版本号变 → 重新触发渲染
+        self.app.maybe_render_charts(self.run_id, sync=True)
+        self.app.maybe_render_charts(self.run_id, sync=True)
+        self.app.save_review(self.run_id, 1, "correct", "校准", reviewer="A")
         self.assertEqual("rendering", self.app.maybe_render_charts(self.run_id, sync=True))
 
     # ---- 日志页 ----
@@ -303,6 +303,96 @@ class NewFeaturesTest(MockServerMixin, unittest.TestCase):
         status, body = self.get("/configs")
         self.assertIn("新建实验配置", body)
         self.assertIn("新建领域配置", body)
+
+    # ---- 协议 §7.x：frozen 序列 / 预登记 / 盲评双人裁决 / 实验矩阵 ----
+
+    def test_frozen_retriever_shared_sequence(self):
+        from kelab import retrieve
+        from kelab.datasets import Item
+
+        pool = [Item(item_id=f"p{i}", question=f"题{i}", gold_ke=f"ke{i}")
+                for i in range(10)]
+        probe1 = Item(item_id="t1", question="查题一", gold_ke="")
+        probe2 = Item(item_id="t2", question="查题二", gold_ke="")
+        a = retrieve.retrieve("frozen", probe1, pool, 3, seed=101)
+        b = retrieve.retrieve("frozen", probe2, pool, 3, seed=101)
+        # 同一套序列，与题目无关
+        self.assertEqual([i.item_id for i in a.items],
+                         [i.item_id for i in b.items])
+        # 嵌套：k=1 是 k=3 的前缀
+        c = retrieve.retrieve("frozen", probe1, pool, 1, seed=101)
+        self.assertEqual([i.item_id for i in c.items],
+                         [i.item_id for i in a.items][:1])
+        # 确定性
+        d = retrieve.retrieve("frozen", probe1, pool, 3, seed=101)
+        self.assertEqual([i.item_id for i in a.items], [i.item_id for i in d.items])
+
+    def test_prereg_create_and_lock(self):
+        from kelab.prereg import create_prereg, load_prereg
+        from kelab.config import load_experiment
+
+        exp = load_experiment(self.root / "configs" / "experiments" / "mini.toml")
+        payload = create_prereg(
+            self.root, exp, dataset_md5="abc123", delta=0.05, quality_gate=0.85,
+            review_rate=0.1,
+            scoring_protocol="人工盲评为主，LLM judge 辅助", actor="测试导师",
+        )
+        self.assertEqual(1, payload["version"])
+        self.assertTrue(payload["prereg_hash"])
+        again = create_prereg(
+            self.root, exp, dataset_md5="abc123", delta=0.03, quality_gate=0.85,
+            review_rate=0.1, scoring_protocol="同上", actor="测试导师", reason="调 δ",
+        )
+        self.assertEqual(2, again["version"])
+        loaded = load_prereg(self.root, exp.name)
+        self.assertEqual(0.03, loaded["delta"])  # 新版生效
+        history = (self.root / "configs" / "prereg" / "prereg_history.jsonl").read_text(
+            encoding="utf-8")
+        self.assertEqual(2, len(history.strip().splitlines()))  # 旧版留痕
+
+    def test_prereg_pages(self):
+        status, body = self.get("/prereg")
+        self.assertEqual(200, status)
+        self.assertIn("预登记", body)
+        status, body = self.get("/prereg/edit?exp=mini")
+        self.assertEqual(200, status)
+        self.assertIn("拐点阈值", body)
+        status, _ = self.post("/prereg/save", {
+            "exp": "mini", "actor": "测试导师", "delta": "0.05",
+            "quality_gate": "", "review_rate": "0.1",
+            "scoring_protocol": "人工盲评为主", "reason": "",
+        })
+        self.assertIn(status, (200, 303))
+
+    def test_blind_dual_review_and_adjudication(self):
+        # A 判 correct、B 判 wrong → 分歧进 C 裁决队列；C 裁后最终判定为 C 的
+        self.app.save_review(self.run_id, 1, "correct", "", reviewer="A")
+        self.app.save_review(self.run_id, 1, "wrong", "", reviewer="B")
+        self.assertEqual([1], self.app.adjudication_pending(self.run_id))
+        final = self.app.get_reviews(self.run_id)
+        self.assertNotIn(1, final)  # 分歧未裁 → 不进最终集
+        self.app.save_review(self.run_id, 1, "wrong", "第三人裁决", reviewer="C")
+        self.assertEqual([], self.app.adjudication_pending(self.run_id))
+        final = self.app.get_reviews(self.run_id)
+        self.assertEqual("wrong", final[1]["human_verdict"])
+
+    def test_review_page_blind_hides_judge(self):
+        status, body = self.get(f"/run/{self.run_id}/review?reviewer=A&blind=1")
+        self.assertEqual(200, status)
+        self.assertIn("盲评：不显示条件与 judge 结论", body)
+        self.assertNotIn("judge：equivalent", body)  # judge 结论被隐藏
+        self.assertNotIn("k-bm25-k0", body)          # 条件（k）也被隐藏
+        status, body = self.get(f"/run/{self.run_id}/review?reviewer=A&blind=0")
+        self.assertIn("judge：", body)               # 非盲评可见
+
+    def test_matrix_page(self):
+        status, body = self.get("/matrix")
+        self.assertEqual(200, status)
+        self.assertIn("实验矩阵", body)
+        self.assertIn(self.run_id, body)
+        status, body = self.get("/matrix.csv")
+        self.assertEqual(200, status)
+        self.assertIn("run_id", body)
 
 
     # ---- dry-run 不建幽灵 run / 重试失败 / 抽检口径 / grammar 报错 ----

@@ -54,12 +54,12 @@ def dump_toml(raw: dict, header: str = "") -> str:
 
 
 def backup_file(path: Path, archive_dir: Path) -> Path | None:
-    """把现有文件复制到 archive_dir/<原名>.<时间戳>.bak。文件不存在则跳过。"""
+    """把现有文件复制到 archive_dir/<原名>.<时间戳（含微秒防同秒覆盖）>.bak。"""
     path = Path(path)
     if not path.exists():
         return None
     archive_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     backup = archive_dir / f"{path.name}.{stamp}.bak"
     shutil.copy2(path, backup)
     return backup

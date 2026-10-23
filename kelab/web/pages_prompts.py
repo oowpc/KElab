@@ -303,7 +303,7 @@ def backup_prompt(path: Path, archive_dir: Path) -> Path | None:
     if not path.exists():
         return None
     archive_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")  # 微秒防同秒同名覆盖
     backup = archive_dir / f"{path.name}.{stamp}.bak"
     shutil.copy2(path, backup)
     return backup

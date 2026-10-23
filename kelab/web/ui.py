@@ -100,7 +100,7 @@ def layout(title: str, body: str, poll_script: str = "") -> bytes:
 </head><body>
 <header>
   <span class="brand">kelab 实验看板</span>
-  <nav><a href="/">向导</a><a href="/runs">运行</a><a href="/launch">启动实验</a><a href="/annotate">标注</a><a href="/compare">对比</a><a href="/domains">汇总对比</a><a href="/grid">(k,N)网格</a><a href="/prepare">数据准备</a><a href="/prompts">Prompt</a><a href="/configs">配置</a><a href="/settings">设置</a></nav>
+  <nav><a href="/">向导</a><a href="/runs">运行</a><a href="/launch">启动实验</a><a href="/annotate">标注</a><a href="/prereg">预登记</a><a href="/matrix">实验矩阵</a><a href="/compare">对比</a><a href="/domains">汇总对比</a><a href="/grid">(k,N)网格</a><a href="/prepare">数据准备</a><a href="/prompts">Prompt</a><a href="/configs">配置</a><a href="/settings">设置</a></nav>
 </header>
 <main>{body}</main>
 {poll_script}

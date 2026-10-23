@@ -648,16 +648,20 @@ def _build_markdown(
         lines += [PROVISIONAL_NOTE, ""]
 
     # ---- 解读摘要（规则引擎产出；每条附依据，详见 run 页解读卡）
-    from .interpret import interpret_run, review_agreement
+    from .interpret import final_verdicts, interpret_run, review_agreement
 
     n_items = len(testset)
     mde = mde_estimate(n_items)
     reviews: dict = {}
     try:
-        reviews = {r["gen_id"]: r for r in
-                   store._conn.execute("SELECT * FROM reviews").fetchall()}
+        rows = store._conn.execute("SELECT * FROM reviews_v2").fetchall()
+        reviews = final_verdicts(rows)  # 协议 §7.4：C 裁决 > A/B 一致 > 单人
     except Exception:
-        pass  # 无 reviews 表（看板外生成的 run）
+        try:
+            reviews = {r["gen_id"]: r for r in
+                       store._conn.execute("SELECT * FROM reviews").fetchall()}
+        except Exception:
+            pass  # 无 reviews 表（看板外生成的 run）
     agree, total_reviewed = review_agreement(store, run_id, reviews)
     findings = interpret_run(metrics, exp, mde,
                              review_agree=agree, review_total=total_reviewed)
@@ -670,10 +674,10 @@ def _build_markdown(
 
     # ---- 主结果表
     lines += [
-        "## 1. 主结果（3 次重复均值±std，单位 %；⚠️ = std 超过 3pp 稳定性门槛）",
+        "## 1. 主结果（均值与 95% 置信区间（逐题 t 区间）；⚠️ = 重复间 std 超 3pp）",
         "",
-        "| 条件 | 语义等价率 | 完全匹配 | 语法可解析 | light 检查 | 检索覆盖度 | 生成覆盖度 | tokens(prompt) | 耗时(ms) | 生成失败 | judge 失败 |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| 条件 | 语义等价率 | 95% CI | 完全匹配 | 语法可解析 | light 检查 | 检索覆盖度 | 生成覆盖度 | tokens(prompt) | 耗时(ms) | 生成失败 | judge 失败 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for cm in metrics:
         tok, _ = _mean_std(cm, "prompt_tokens")
@@ -683,32 +687,31 @@ def _build_markdown(
         exact, _ = _mean_std(cm, "exact")
         lark, _ = _mean_std(cm, "lark")
         light, _ = _mean_std(cm, "light")
+        lo, hi = cm.semantic_ci[1], cm.semantic_ci[2]
+        ci_text = f"[{_pct(lo)}, {_pct(hi)}]" if lo is not None else "—"
         lines.append(
-            f"| {cm.condition_id} | {_mean_std_text(cm, 'semantic')} | {_pct(exact)} "
+            f"| {cm.condition_id} | {_mean_std_text(cm, 'semantic')} | {ci_text} | {_pct(exact)} "
             f"| {_pct(lark)} | {_pct(light)} | {_pct(cov_r)} | {_pct(cov_g)} "
             f"| {tok:.0f} | {lat:.0f} | {cm.n_gen_error} | {cm.n_judge_error} |"
             if tok is not None and lat is not None else
-            f"| {cm.condition_id} | {_mean_std_text(cm, 'semantic')} | {_pct(exact)} "
+            f"| {cm.condition_id} | {_mean_std_text(cm, 'semantic')} | {ci_text} | {_pct(exact)} "
             f"| {_pct(lark)} | {_pct(light)} | {_pct(cov_r)} | {_pct(cov_g)} | — | — "
             f"| {cm.n_gen_error} | {cm.n_judge_error} |"
         )
     lines.append("")
 
-    # ---- 曲线与拐点
+    # ---- 曲线与拐点（协议 §7.5：连续两档增益<δ + 配对 CI 未达最小实际差异 + δ 敏感性）
     lines += [f"## 2. {axis_name}–质量曲线与拐点", ""]
     for key, caption in (("quality", "主图"), ("marginal", "边际增益")):
         fname, ok = figures[key]
         if ok:
             lines += [f"![{caption}]({fname})", ""]
-    axis_label = "k*" if exp.kind == "k" else "N*"
-    for retriever, kn in knee_by_retriever.items():
-        if kn is None:
-            lines.append(f"- {SERIES_LABEL[retriever]}：未出现拐点（全程边际增益 ≥ {exp.knee_threshold:.0%}）")
-        else:
-            lines.append(
-                f"- {SERIES_LABEL[retriever]}：{axis_label} = {kn:g}"
-                f"（边际增益首次 < {exp.knee_threshold:.0%} 的最小档；最优性价比档为其前一档）"
-            )
+    lines += _knee_section(store, run_id, exp, metrics, mde)
+    lines.append("")
+
+    # ---- 选择规则与停止线（协议 §7.6）
+    lines += ["### 选择规则与停止线", ""]
+    lines += _selection_rule(metrics, exp)
     lines.append("")
 
     # ---- 统计功效（方案 §5.3：主结论只对 ≥MDE 的差异下判断）
@@ -790,12 +793,121 @@ def _build_markdown(
         "",
         f"- 人工抽检：按条件分层随机抽 {n_review} 条（比例 {domain.review_sample_rate:.0%}），"
         "见 `review_sample.csv`（human_verdict/human_note 列留白待人工填写）",
+        "- **判分口径（协议 §7.4）**：语义等价以人工盲评为准（双人独立 + 分歧第三人裁决）；"
+        "LLM judge 只作辅助信号，不单独决定 gold 等价",
         "- judge 与生成同源的偏差风险靠该抽检对冲；judge 模型可配置更换",
         f"- 复现：`python -m kelab.cli run --exp <实验配置> --resume`，"
         f"明细见 `runs/{run_id}/kelab.sqlite`（prompt 全文逐字落库）",
         "",
     ]
     return "\n".join(lines)
+
+
+def _item_scores(store: Store, run_id: str, condition_id: str) -> dict[str, float]:
+    rows = store._conn.execute(
+        "SELECT g.item_id, j.llm_score FROM generations g"
+        " JOIN judgments j ON j.gen_id=g.gen_id"
+        " WHERE g.run_id=? AND g.condition_id=? AND g.status='ok'"
+        " AND j.llm_score IS NOT NULL", (run_id, condition_id),
+    ).fetchall()
+    return {r["item_id"]: r["llm_score"] for r in rows}
+
+
+def _knee_section(
+    store: Store, run_id: str, exp: ExperimentConfig,
+    metrics: list[ConditionMetrics], mde: float | None,
+) -> list[str]:
+    """协议 §7.5 拐点段：k* = 从某档起连续两个相邻档位边际增益均 < δ，
+    且相邻档配对 CI 未达最小实际差异（MDE）。附 δ 敏感性分析。"""
+    from .stats import knee_sensitivity, knee_two_gains, paired_diff_ci
+
+    axis_name = "k*" if exp.kind == "k" else "N*"
+    delta = exp.knee_threshold
+    key = (lambda cm: cm.k) if exp.kind == "k" else (lambda cm: cm.n)
+    out: list[str] = []
+    seen_retrievers = []
+    for cm in metrics:
+        if cm.kind == exp.kind and cm.onto == "full" and cm.retriever not in seen_retrievers:
+            seen_retrievers.append(cm.retriever)
+    for retriever in SERIES_ORDER:
+        if retriever not in seen_retrievers:
+            continue
+        cms = sorted([cm for cm in metrics
+                      if cm.kind == exp.kind and cm.onto == "full"
+                      and cm.retriever == retriever], key=key)
+        xs = [float(key(cm)) for cm in cms]
+        means = [_mean_std(cm, "semantic")[0] for cm in cms]
+        if len(xs) < 3 or any(m is None for m in means):
+            out.append(f"- {SERIES_LABEL[retriever]}：数据不足（拐点需 ≥3 档完整数据）")
+            continue
+        means_f = [float(m) for m in means]
+        knee = knee_two_gains(xs, means_f, delta)
+        sens = knee_sensitivity(xs, means_f)
+        sens_text = "，".join(
+            f"δ={d:.0%}→{axis_name}={f'{k:g}' if k is not None else '无'}"
+            for d, k in sens
+        )
+        if knee is None:
+            out.append(
+                f"- {SERIES_LABEL[retriever]}：按协议定义**未出现拐点**"
+                f"（无连续两档增益均 < {delta:.0%}）。δ 敏感性：{sens_text}"
+            )
+            continue
+        # 配对 CI 确认：拐点档与其前一档、后一档的同题配对差值
+        ki = xs.index(knee)
+        confirms = []
+        for j in (ki, ki + 1):
+            if j <= 0 or j >= len(xs):
+                continue
+            a = _item_scores(store, run_id, cms[j - 1].condition_id)
+            b = _item_scores(store, run_id, cms[j].condition_id)
+            common = sorted(set(a) & set(b))
+            diff, lo, hi, n = paired_diff_ci([b[i] for i in common], [a[i] for i in common])
+            if n:
+                under = mde is not None and hi is not None and hi < mde
+                confirms.append(
+                    f"{xs[j - 1]:g}→{xs[j]:g} 差 {diff * 100:+.1f}pp "
+                    f"CI[{_pct(lo)}, {_pct(hi)}] n={n}"
+                    + ("（未达 MDE ✓）" if under else "（CI 超 MDE，拐点存疑）")
+                )
+        out.append(
+            f"- {SERIES_LABEL[retriever]}：**{axis_name} = {knee:g}**"
+            f"（连续两档增益 < {delta:.0%}）。配对确认：{'；'.join(confirms) or '无共同题'}"
+        )
+        out.append(f"  - δ 敏感性：{sens_text}")
+    return out
+
+
+def _selection_rule(metrics: list[ConditionMetrics], exp: ExperimentConfig) -> list[str]:
+    """协议 §7.6 选择规则：先满足质量门槛与门禁指标，再选达标且成本最低的 k；
+    未设门槛只报曲线，不宣称「最优 k」。"""
+    if exp.quality_gate is None:
+        return [
+            "- **选择规则**：未设质量门槛——按协议只报告曲线，不宣称最优 k；"
+            "要出选择结论须先在预登记里由决策人设定门槛"
+        ]
+    full = [cm for cm in metrics if cm.onto == "full" and cm.kind == exp.kind]
+    passing = []
+    for cm in full:
+        sem, _ = _mean_std(cm, "semantic")
+        lark, _ = _mean_std(cm, "lark")
+        light, _ = _mean_std(cm, "light")
+        tok, _ = _mean_std(cm, "prompt_tokens")
+        if (sem is not None and sem >= exp.quality_gate
+                and (lark is None or lark >= 1.0) and (light is None or light >= 1.0)):
+            passing.append((cm, tok))
+    if not passing:
+        return [
+            f"- **选择规则**：质量门槛 {exp.quality_gate:.0%} 无档位通过——只报告曲线；"
+            "是否降门槛属决策人事项（协议禁止降标准关闭）"
+        ]
+    passing.sort(key=lambda t: (t[1] if t[1] is not None else float("inf")))
+    cm, tok = passing[0]
+    return [
+        f"- **选择规则**（质量门槛 {exp.quality_gate:.0%}，门禁全过）：推荐 "
+        f"**{cm.condition_id}**——语义 {_pct(_mean_std(cm, 'semantic')[0])}，"
+        f"prompt tokens {tok:.0f}，达标档中成本最低"
+    ]
 
 
 def _lift_and_cost(

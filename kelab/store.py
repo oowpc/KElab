@@ -86,6 +86,13 @@ MIGRATIONS = [
     "ALTER TABLE conditions ADD COLUMN onto TEXT DEFAULT 'full'",
     "ALTER TABLE conditions ADD COLUMN gen_model TEXT",
     "ALTER TABLE runs ADD COLUMN dataset_md5 TEXT",
+    # 协议 §7.4：双人盲评 + 第三人裁决（reviews_v2 带评审员与盲评标记）
+    "CREATE TABLE IF NOT EXISTS reviews_v2 ("
+    " gen_id INTEGER NOT NULL, reviewer TEXT NOT NULL DEFAULT 'A',"
+    " human_verdict TEXT, human_note TEXT, blind INTEGER DEFAULT 1,"
+    " reviewed_at TEXT, PRIMARY KEY(gen_id, reviewer))",
+    "INSERT OR IGNORE INTO reviews_v2(gen_id, human_verdict, human_note, reviewed_at)"
+    " SELECT gen_id, human_verdict, human_note, reviewed_at FROM reviews",
 ]
 
 

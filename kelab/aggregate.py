@@ -51,6 +51,8 @@ class ConditionMetrics:
     n_ok: int = 0
     n_gen_error: int = 0
     n_judge_error: int = 0
+    # 语义等价率的 95% CI（逐题得分 t 区间，协议 §7.4）
+    semantic_ci: tuple[float | None, float | None, float | None] = (None, None, None)
 
 
 def _row_metric(row, metric: str) -> float | None:
@@ -120,6 +122,10 @@ def aggregate_run(
                 alert=std > exp.std_alert and metric not in {"prompt_tokens", "completion_tokens", "latency_ms"},
                 n=len(rep_means),
             )
+        # 语义等价率的逐题 95% CI（协议 §7.4）
+        from .stats import mean_ci
+        item_scores = [r["llm_score"] for r in ok_rows if r["llm_score"] is not None]
+        cm.semantic_ci = mean_ci(item_scores)
         out.append(cm)
     return out
 

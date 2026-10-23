@@ -201,28 +201,51 @@ class WebApp:
             )
         return conn
 
-    def save_review(self, run_id: str, gen_id: int, verdict: str, note: str) -> None:
+    def save_review(self, run_id: str, gen_id: int, verdict: str, note: str,
+                    reviewer: str = "A", blind: bool = True) -> None:
+        """协议 §7.4：评审员 A/B 独立盲评，分歧由 C 裁决。同 (gen_id, reviewer) 覆盖。"""
         conn = self._reviews_conn(run_id, create=True)
         try:
             with conn:
                 conn.execute(
-                    "INSERT OR REPLACE INTO reviews(gen_id, human_verdict, human_note, reviewed_at)"
-                    " VALUES (?,?,?,?)",
-                    (gen_id, verdict, note,
+                    "INSERT OR REPLACE INTO reviews_v2(gen_id, reviewer, human_verdict,"
+                    " human_note, blind, reviewed_at) VALUES (?,?,?,?,?,?)",
+                    (gen_id, (reviewer or "A").upper()[:1], verdict, note, int(blind),
                      datetime.now(timezone.utc).isoformat(timespec="seconds")),
                 )
         finally:
             conn.close()
 
-    def get_reviews(self, run_id: str) -> dict[int, sqlite3.Row]:
+    def get_reviews_raw(self, run_id: str) -> list:
+        """reviews_v2 全部行（每条含 reviewer）。"""
         conn = self._reviews_conn(run_id)
         try:
-            rows = conn.execute("SELECT * FROM reviews").fetchall()
-            return {r["gen_id"]: r for r in rows}
-        except sqlite3.OperationalError:
-            return {}  # reviews 表还没建（尚未保存过任何人工判定）
+            try:
+                return conn.execute(
+                    "SELECT * FROM reviews_v2 ORDER BY gen_id, reviewer").fetchall()
+            except sqlite3.OperationalError:
+                return []  # 表还没建
         finally:
             conn.close()
+
+    def get_reviews(self, run_id: str) -> dict[int, sqlite3.Row]:
+        """最终判定视图：gen_id → 有效判定行。
+        优先级：C 裁决 > A/B 一致 > 仅一人已判。"""
+        from ..interpret import final_verdicts
+
+        return final_verdicts(self.get_reviews_raw(run_id))
+
+    def adjudication_pending(self, run_id: str) -> list[int]:
+        """A、B 已判且分歧、C 未裁的 gen_id 列表（第三人裁决队列）。"""
+        by_gen: dict[int, dict] = {}
+        for r in self.get_reviews_raw(run_id):
+            by_gen.setdefault(r["gen_id"], {})[r["reviewer"]] = r
+        out = []
+        for gen_id, rs in by_gen.items():
+            a, b, c = rs.get("A"), rs.get("B"), rs.get("C")
+            if a and b and a["human_verdict"] != b["human_verdict"] and not c:
+                out.append(gen_id)
+        return out
 
     # ---- 图表自动渲染 ----
 
@@ -243,16 +266,16 @@ class WebApp:
             "SELECT COUNT(*) c FROM generations WHERE run_id=?", (run_id,)
         ).fetchone()["c"]
         store.close()
-        n_reviews = len(self.get_reviews(run_id))
+        n_reviews = self._reviews_signature(run_id)
         if total == 0:
             return "skipped"
         figs_exist = any(self.results_dir.glob(f"{run_id}/*.png"))
         state = self._chart_state.get(run_id, {})
         if state.get("count") == -1 and not figs_exist:
             return "failed"
-        # 版本 = 生成数 + 抽检数：人工判定变了也要重画（解读卡/报告含一致率）
+        # 版本 = 生成数 + 抽检内容签名（覆盖也算）：人工判定变了也要重画
         if figs_exist and state.get("count") == total \
-                and state.get("reviews", 0) == n_reviews:
+                and state.get("reviews", "") == n_reviews:
             return "fresh"
         if state.get("rendering"):
             return "rendering"
@@ -595,6 +618,19 @@ class WebApp:
         finally:
             store.close()
         return f"分享版已导出：results/{run_id}/share.html（单文件，图表内嵌）"
+
+    def _reviews_signature(self, run_id: str) -> str:
+        """抽检内容签名：行数+内容哈希（同 (gen,reviewer) 覆盖改写也能感知）。"""
+        import hashlib
+
+        rows = self.get_reviews_raw(run_id)
+        if not rows:
+            return ""
+        payload = "|".join(
+            f"{r['gen_id']}:{r['reviewer']}:{r['human_verdict']}:{r['human_note']}"
+            for r in rows
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
     def stop_run(self, run_id: str) -> str:
         """停止本会话启动的运行中子进程。返回提示消息。"""

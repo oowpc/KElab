@@ -201,20 +201,87 @@ def dedupe_items(items: list[Item]) -> tuple[list[Item], dict]:
     }
 
 
+def group_families(items: list[Item], threshold: float = 0.72) -> list[list[int]]:
+    """按题干归一化相似度把近重复/同模板题聚成族（并查集）。
+    协议 §7.3：同族题必须落在同一分区（池/开发集/测试集不跨族泄露）。"""
+    import difflib
+
+    norms = [_norm_question(it.question) for it in items]
+    parent = list(range(len(items)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for i in range(len(items)):
+        for j in range(i + 1, len(items)):
+            if abs(len(norms[i]) - len(norms[j])) / max(len(norms[i]), len(norms[j]), 1) > 0.5:
+                continue  # 长度差太大直接跳过（省 O(n²) 里的明显负对）
+            if difflib.SequenceMatcher(None, norms[i], norms[j]).quick_ratio() >= threshold \
+                    and difflib.SequenceMatcher(None, norms[i], norms[j]).ratio() >= threshold:
+                union(i, j)
+    families: dict[int, list[int]] = {}
+    for i in range(len(items)):
+        families.setdefault(find(i), []).append(i)
+    return list(families.values())
+
+
+def split_dataset3(
+    items: list[Item],
+    test_size: int,
+    dev_size: int = 0,
+    seed: int = 42,
+    group_threshold: float | None = 0.72,
+) -> tuple[list[Item], list[Item], list[Item]]:
+    """三分数据集（协议 §7.3）：(测试集, 开发集, 候选池)。
+    开发集用于流程调试与判分器校准，不计入主结果。
+    group_threshold 非 None 时按题族整族切分（同族不跨分区）。
+
+    返回 (testset, dev, pool)，各自按 item_id 排序；同 seed 同结果。"""
+    n = len(items)
+    if test_size < 1:
+        raise DataError(f"test_size={test_size} 非法（至少 1）")
+    if test_size + dev_size >= n:
+        raise DataError(
+            f"test_size+dev_size={test_size + dev_size} 必须小于总量 {n}（池不能为空）")
+    if group_threshold is None:
+        order = list(items)
+        random.Random(seed).shuffle(order)
+        testset = order[:test_size]
+        dev = order[test_size:test_size + dev_size]
+        pool = order[test_size + dev_size:]
+    else:
+        families = [[items[i] for i in fam]
+                    for fam in group_families(items, group_threshold)]
+        random.Random(seed).shuffle(families)
+        testset, dev, pool = [], [], []
+        for fam in families:  # 整族依次填入：先测试集满 → 开发集满 → 其余进池
+            if len(testset) + len(fam) <= test_size:
+                testset.extend(fam)
+            elif len(dev) + len(fam) <= dev_size:
+                dev.extend(fam)
+            else:
+                pool.extend(fam)
+        if len(testset) < test_size or len(dev) < dev_size:
+            # 族粒度导致某分区装不满：报出来由人决定（协议不允许拆族）
+            pass
+    key = lambda it: it.item_id
+    return (sorted(testset, key=key), sorted(dev, key=key), sorted(pool, key=key))
+
+
 def split_dataset(
     items: list[Item], test_size: int, seed: int = 42
 ) -> tuple[list[Item], list[Item]]:
-    """把全量 gold 数据切成 (测试集, 候选池)——fixed 池模式的入口。
-
-    同一 seed 切分结果固定（实验可比）；测试集/池均按 item_id 排序输出。
-    泄露零交集由 check_leakage(fixed) 独立复核。
-    """
-    if not 1 <= test_size < len(items):
-        raise DataError(f"test_size={test_size} 超出范围 [1, {len(items) - 1}]")
-    order = list(items)
-    random.Random(seed).shuffle(order)
-    testset = sorted(order[:test_size], key=lambda it: it.item_id)
-    pool = sorted(order[test_size:], key=lambda it: it.item_id)
+    """二分兼容接口（旧调用）→ 委托 split_dataset3，dev 为空。"""
+    testset, _dev, pool = split_dataset3(items, test_size, dev_size=0, seed=seed,
+                                         group_threshold=None)
     return testset, pool
 
 

@@ -73,6 +73,9 @@ class ExperimentConfig:
     onto_linking: str | None = None
     # 模型对照（k 方案 C / n 方案 I）：条件叉乘维度，None = 只用领域默认模型（不进配置哈希）
     gen_models: list[str] | None = None
+    # 质量门槛（协议 §7.6 选择规则）：语义等价率须 ≥ 该值才进入「最低成本 k」选择；
+    # None = 不设门槛，只报曲线不宣称最优 k。None 不进配置哈希
+    quality_gate: float | None = None
     # 拐点判定阈值（边际增益首次低于该值的档位）
     knee_threshold: float = 0.05
     std_alert: float = 0.03
@@ -177,6 +180,7 @@ def load_experiment(path: Path | str) -> ExperimentConfig:
         onto_modes=[str(x) for x in e["onto_modes"]] if e.get("onto_modes") else None,
         onto_linking=str(e["onto_linking"]) if e.get("onto_linking") else None,
         gen_models=[str(x) for x in e["gen_models"]] if e.get("gen_models") else None,
+        quality_gate=float(e["quality_gate"]) if e.get("quality_gate") is not None else None,
         knee_threshold=float(e.get("knee_threshold", 0.05)),
         std_alert=float(e.get("std_alert", 0.03)),
         oracle_gap_threshold=float(e.get("oracle_gap_threshold", 0.05)),
@@ -196,7 +200,7 @@ def load_experiment(path: Path | str) -> ExperimentConfig:
             f"seeds 数量({len(cfg.seeds)})少于 repeats({cfg.repeats})，"
             "每次重复必须有独立种子"
         )
-    valid_retrievers = {"random", "bm25", "dense", "hybrid", "oracle"}
+    valid_retrievers = {"random", "bm25", "dense", "hybrid", "oracle", "frozen"}
     bad = set(cfg.retrievers) - valid_retrievers
     if bad:
         raise ConfigError(f"未知检索器: {sorted(bad)}（可选 {sorted(valid_retrievers)}）")
@@ -208,6 +212,8 @@ def load_experiment(path: Path | str) -> ExperimentConfig:
             raise ConfigError("onto_linking 只能是 retriever|gold")
     if cfg.gen_models is not None and not cfg.gen_models:
         raise ConfigError("gen_models 要么不写（用领域默认模型），要么至少一个模型名")
+    if cfg.quality_gate is not None and not 0.0 <= cfg.quality_gate <= 1.0:
+        raise ConfigError(f"quality_gate 须在 [0,1]，得到 {cfg.quality_gate}")
     return cfg
 
 

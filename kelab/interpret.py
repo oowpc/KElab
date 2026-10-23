@@ -209,6 +209,25 @@ def review_agreement(store, run_id: str, reviews: dict) -> tuple[int, int]:
     return agree, total
 
 
+def final_verdicts(rows: list) -> dict:
+    """评审原始行（含 reviewer）→ 最终判定 {gen_id: row}。
+    协议 §7.4：C 裁决 > A/B 一致 > 仅一人已判（A/B 分歧且未裁 → 不进最终集）。"""
+    by_gen: dict[int, dict] = {}
+    for r in rows:
+        by_gen.setdefault(r["gen_id"], {})[r["reviewer"]] = r
+    final: dict = {}
+    for gen_id, rs in by_gen.items():
+        a, b, c = rs.get("A"), rs.get("B"), rs.get("C")
+        if c:
+            final[gen_id] = c
+        elif a and b and a["human_verdict"] == b["human_verdict"]:
+            final[gen_id] = a
+        elif (a and not b) or (b and not a):
+            final[gen_id] = a or b  # 仅一人已判
+        # A/B 分歧且未裁 → 不进最终集
+    return final
+
+
 def top_finding(metrics: list[ConditionMetrics], exp: ExperimentConfig,
                 mde: float | None) -> str:
     """一句话解读（汇总表/运行列表用）：取第一条非 info 的 Finding，否则第一条。"""

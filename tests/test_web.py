@@ -256,13 +256,17 @@ class WebTest(unittest.TestCase):
     def test_prompt_save_valid_creates_backup(self):
         tpl = self.root / "prompt_mini.md"
         original = tpl.read_text(encoding="utf-8")
+        before = list((self.root / "archive" / "prompts").glob("prompt_mini.md.*.bak"))
         new_content = original.replace("标注专家", "资深标注专家")
         status, _ = self.post("/prompts/save", {"domain": "conic", "content": new_content})
         self.assertIn(status, (200, 303))
         self.assertIn("资深标注专家", tpl.read_text(encoding="utf-8"))
-        backups = list((self.root / "archive" / "prompts").glob("prompt_mini.md.*.bak"))
-        self.assertEqual(1, len(backups))
-        self.assertEqual(original, backups[0].read_text(encoding="utf-8"))
+        after = list((self.root / "archive" / "prompts").glob("prompt_mini.md.*.bak"))
+        self.assertEqual(len(before) + 1, len(after))  # 恰好多一个备份（共享现场顺序无关）
+        self.assertTrue(
+            any(b.read_text(encoding="utf-8") == original for b in after),
+            "至少一个备份应是改动前内容",
+        )
 
     def test_prompt_save_invalid_rejected(self):
         tpl = self.root / "prompt_mini.md"

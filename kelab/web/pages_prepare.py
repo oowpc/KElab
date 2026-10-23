@@ -55,8 +55,9 @@ def page_prepare(app: WebApp, query: dict) -> bytes:
 </div>
 <div style='margin:10px 0' class='filters'>
 <label>切分测试集题数 <input type='text' name='split' placeholder='不切分' style='width:70px'></label>
+<label>开发集题数 <input type='text' name='dev' placeholder='0' style='width:56px'></label>
 <label>切分种子 <input type='text' name='split_seed' value='42' style='width:60px'></label>
-<span class='muted'>填了切分：前 N 题 → testset.jsonl，其余 → pool.jsonl（fixed 池模式）</span>
+<span class='muted'>协议 §7.3：测试集（主结果）/ 开发集（调试与判分校准）/ 池，按题族整族切分防同构泄露</span>
 </div>
 <div style='margin:6px 0'><label><input type='checkbox' name='save_colmap'>
 把本次列映射保存到领域配置 [xlsx] 节（下次免填）</label></div>
@@ -84,6 +85,8 @@ def post_prepare(app: WebApp, form: dict) -> bytes:
         xlsx = app.root / xlsx
     split_text = form.get("split", [""])[0].strip()
     split = int(split_text) if split_text else None
+    dev_text = form.get("dev", [""])[0].strip()
+    dev_size = int(dev_text) if dev_text else 0
     split_seed = int(form.get("split_seed", ["42"])[0] or 42)
     action = form.get("action", ["preview"])[0]
 
@@ -150,9 +153,10 @@ def post_prepare(app: WebApp, form: dict) -> bytes:
     body.append("<div class='card'>gold KE 全部通过 lark 解析 + light 检查 ✓</div>")
 
     if split:
-        testset, pool = datasets.split_dataset(items, split, seed=split_seed)
+        testset, dev, pool = datasets.split_dataset3(items, split, dev_size=dev_size,
+                                                     seed=split_seed)
     else:
-        testset, pool = items, None
+        testset, dev, pool = items, [], None
 
     if action == "preview":
         leak_note = ""
@@ -174,6 +178,11 @@ def post_prepare(app: WebApp, form: dict) -> bytes:
     if pool is not None:
         pool_path = out_dir / f"{xlsx.stem}_pool.jsonl"
         datasets.write_jsonl(pool, pool_path)
+        if dev:
+            dev_path = out_dir / f"{xlsx.stem}_dev.jsonl"
+            datasets.write_jsonl(dev, dev_path)
+            lines.append(f"开发集 {len(dev)} 题 → <span class='mono'>{ESC(str(dev_path))}</span>"
+                         "（流程调试/判分校准用，不计主结果）")
         report = datasets.check_leakage(testset, pool, "fixed")
         datasets.save_leakage_report(report, out_dir / "_leakage_report.json")
         lines.append(f"候选池 {len(pool)} 条 → <span class='mono'>{ESC(str(pool_path))}</span>")

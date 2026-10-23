@@ -131,9 +131,17 @@ def process_one(
                 pool, condition.n, seed, item.item_id, nested=res.exp.nested
             )
 
-        retrieval = retrieve.retrieve(
-            condition.retriever, item, pool, condition.k, seed
-        )
+        if condition.retriever == "frozen":
+            # 协议 §7.2：预先冻结的嵌套示例序列，全题共用同一套；
+            # LOO 下从全局序列剔除题目自身（防自泄露），再取前 k 条
+            full = res.testset if isinstance(res.pools, dict) else pool
+            order = retrieve._retrieve_frozen(full, seed)
+            picked = [x for x in order if x.item_id != item.item_id][: condition.k]
+            retrieval = retrieve.RetrievalResult(items=picked)
+        else:
+            retrieval = retrieve.retrieve(
+                condition.retriever, item, pool, condition.k, seed
+            )
 
         # 本体注入对照：linked 模式按相关性来源裁剪本体（默认检索式，泄露安全）
         template = res.template

@@ -196,15 +196,21 @@ def cmd_prepare(args: argparse.Namespace) -> int:
 
     pool_path: Path | None = Path(args.pool_out) if args.pool_out else None
     if args.split:
-        testset, pool = datasets.split_dataset(items, args.split, seed=args.split_seed)
+        testset, dev, pool = datasets.split_dataset3(
+            items, args.split, dev_size=args.dev, seed=args.split_seed)
         datasets.write_jsonl(testset, out)
         pool_path = pool_path or DEFAULT_DERIVED / f"{xlsx.stem}_pool.jsonl"
         datasets.write_jsonl(pool, pool_path)
+        dev_note = ""
+        if dev:
+            dev_path = DEFAULT_DERIVED / f"{xlsx.stem}_dev.jsonl"
+            datasets.write_jsonl(dev, dev_path)
+            dev_note = f"；开发集 {len(dev)} 题 → {dev_path}（流程调试/判分器校准用，不计主结果）"
         items_for_leakage = testset
         pools = pool
         strategy = "fixed"
         print(f"切分：测试集 {len(testset)} 题 → {out}；池 {len(pool)} 条 → {pool_path}"
-              f"（seed {args.split_seed}）", file=sys.stderr)
+              f"（seed {args.split_seed}）{dev_note}", file=sys.stderr)
     else:
         datasets.write_jsonl(items, out)
         items_for_leakage = items
@@ -336,6 +342,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--col", action="append",
                    help="列映射覆盖，如 --col gold_ke=KE（可多次；默认读领域 [xlsx] 节）")
     p.add_argument("--split", type=int, help="切分：前 N 题作测试集，其余作池")
+    p.add_argument("--dev", type=int, default=0, help="开发集题数（流程调试/判分器校准用）")
     p.add_argument("--split-seed", type=int, default=42)
     p.add_argument("--pool-out", help="切分时池的输出路径")
     p.set_defaults(func=cmd_prepare)
