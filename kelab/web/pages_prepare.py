@@ -91,7 +91,7 @@ def post_prepare(app: WebApp, form: dict) -> bytes:
     action = form.get("action", ["preview"])[0]
 
     body = [f"<h1>数据准备：{ESC(domain_name)}</h1>",
-            f"<p><a href='/prepare'>← 修改参数重新来</a></p>"]
+            "<p><a href='/prepare'>← 修改参数重新来</a></p>"]
     try:
         items = datasets.import_xlsx(xlsx, col_map=col_map)
     except Exception as exc:

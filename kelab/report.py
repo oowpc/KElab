@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import csv
-import json
 import statistics
 from pathlib import Path
 
@@ -555,7 +554,7 @@ def render_report(
     """生成 results/<run_id>/ 下的 metrics.csv、图与 report.md。"""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    lang = _setup_fonts()
+    _setup_fonts()
     metrics = aggregate_run(store, run_id, exp)
     write_metrics_csv(metrics, out_dir / "metrics.csv")
     items_by_id = {it.item_id: it for it in testset}
@@ -658,12 +657,15 @@ def _build_markdown(
     # 预登记一致性/时序校验（consistency：配置漂移；timing：先看数后登记）
     prereg_warnings: list[str] = []
     if prereg:
-        from .config import dataset_fingerprint
+        from .config import dataset_fingerprint, file_md5
         from .prereg import check_consistency
 
-        fp_now = dataset_fingerprint(exp) if Path(exp.testset).exists() else None
+        fp_now = raw_now = None
+        if Path(exp.testset).exists():
+            fp_now = dataset_fingerprint(exp)
+            raw_now = file_md5(exp.testset)  # 旧版预登记用原始 md5 算法，对质用
         prereg_warnings = check_consistency(
-            prereg, exp, dataset_md5_now=fp_now,
+            prereg, exp, dataset_md5_now=fp_now, dataset_file_md5_now=raw_now,
             run_started_at=run_info["started_at"] if run_info else None,
             history=prereg_history,
         )
@@ -713,10 +715,13 @@ def _build_markdown(
     lines.append("")
 
     # ---- 主结果表
+    from .tasks import get_task
+
+    primary_label = get_task(domain.task).primary_metric  # 指标名走任务适配器
     lines += [
-        "## 1. 主结果（均值与 95% 置信区间（逐题 t 区间）；⚠️ = 重复间 std 超 3pp）",
+        "## 1. 主结果（均值与 95% 置信区间（逐题 t 区间，截断到 [0,1]）；⚠️ = 重复间 std 超 3pp）",
         "",
-        "| 条件 | 语义等价率 | 95% CI | 完全匹配 | 语法可解析 | light 检查 | 检索覆盖度 | 生成覆盖度 | tokens(prompt) | 耗时(ms) | 生成失败 | judge 失败 |",
+        f"| 条件 | {primary_label} | 95% CI | 完全匹配 | 语法可解析 | light 检查 | 检索覆盖度 | 生成覆盖度 | tokens(prompt) | 耗时(ms) | 生成失败 | judge 失败 |",
         "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for cm in metrics:
@@ -764,7 +769,7 @@ def _build_markdown(
             "",
             f"- 当前每条件 {n_items} 题；按方案锚点（100 题 ≈ 5pp，待精确计算）"
             f"以 1/√n 换算：**MDE ≈ {mde * 100:.1f}pp**",
-            f"- 判读规则：小于 MDE 的差异一律判「数据不足」，不下「有效/无效」结论"
+            "- 判读规则：小于 MDE 的差异一律判「数据不足」，不下「有效/无效」结论"
             + ("；本轮为冒烟小样本，绝大多数差异在 MDE 之下" if n_items < 100 else ""),
             "",
         ]
@@ -969,6 +974,9 @@ def _lift_and_cost(
 ) -> list[str]:
     """相对提升（vs 最小档、到上限的追加增益）与成本换算。
     k 实验换算 token；N 实验另加「池构建成本」（方案验收：每 +1pp 需多少标注投入）。"""
+    from .tasks import get_task
+
+    label = get_task(getattr(domain, "task", None)).primary_metric if domain else "主指标"
     out: list[str] = []
     per_retriever: dict[str, list[ConditionMetrics]] = {}
     for cm in metrics:
@@ -993,16 +1001,16 @@ def _lift_and_cost(
             if lift > 1e-9:
                 cost = (tok_best - tok_first) / (lift * 100)
                 out.append(
-                    f"  - token 成本换算：语义等价率每 +1pp 约多花 {cost:.0f} prompt tokens"
+                    f"  - token 成本换算：{label}每 +1pp 约多花 {cost:.0f} prompt tokens"
                     f"（{tok_first:.0f} → {tok_best:.0f}）"
                 )
             else:
-                out.append("  - token 成本换算：语义等价率无提升，无法换算（token 增量无收益）")
+                out.append(f"  - token 成本换算：{label}无提升，无法换算（token 增量无收益）")
         if exp.kind == "n":
             n_first, n_best = _axis_value(first), _axis_value(best)
             if lift > 1e-9 and n_best > n_first:
                 per_pp = (n_best - n_first) / (lift * 100)
-                line = (f"  - 池构建成本换算：语义等价率每 +1pp ≈ 多标注 {per_pp:.0f} 条 gold KE"
+                line = (f"  - 池构建成本换算：{label}每 +1pp ≈ 多标注 {per_pp:.0f} 条 gold KE"
                         f"（N {n_first:g} → {n_best:g}）")
                 if domain is not None and domain.annotation_cost_per_item:
                     yuan = per_pp * domain.annotation_cost_per_item

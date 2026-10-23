@@ -28,8 +28,15 @@ def t_crit_95(df: int) -> float:
     return _T_CRIT[min(_T_CRIT, key=lambda k: abs(k - df))]
 
 
-def mean_ci(values: list[float | None]) -> tuple[float | None, float | None, float | None]:
-    """逐题得分序列的均值与 t 95% CI。返回 (mean, lo, hi)；n<2 → CI 为 None。"""
+def mean_ci(
+    values: list[float | None],
+    clamp: tuple[float, float] | None = None,
+) -> tuple[float | None, float | None, float | None]:
+    """逐题得分序列的均值与 t 95% CI。返回 (mean, lo, hi)；n<2 → CI 为 None。
+
+    clamp：比例指标传 (0.0, 1.0)——t 区间对称外推会越界（如 [78.5%, 101.5%]），
+    截断到合法值域；配对差值等可为负的指标不要传（差值域 [-1,1]）。
+    """
     vals = [v for v in values if v is not None]
     n = len(vals)
     if n == 0:
@@ -38,7 +45,11 @@ def mean_ci(values: list[float | None]) -> tuple[float | None, float | None, flo
     if n < 2:
         return m, None, None
     half = t_crit_95(n - 1) * statistics.stdev(vals) / math.sqrt(n)
-    return m, m - half, m + half
+    lo, hi = m - half, m + half
+    if clamp:
+        lo = max(clamp[0], lo)
+        hi = min(clamp[1], hi)
+    return m, lo, hi
 
 
 def wilson_ci(successes: int, n: int, z: float = 1.96) -> tuple[float | None, float | None, float | None]:

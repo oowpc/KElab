@@ -130,7 +130,8 @@ def aggregate_run(
             if r["llm_score"] is not None:
                 by_item.setdefault(r["item_id"], []).append(r["llm_score"])
         item_means = [statistics.fmean(v) for v in by_item.values()]
-        cm.semantic_ci = mean_ci(item_means)
+        # 比例指标：t 区间截断到 [0,1]（对称外推会越界，如 [78.5%, 101.5%]）
+        cm.semantic_ci = mean_ci(item_means, clamp=(0.0, 1.0))
         out.append(cm)
     return out
 

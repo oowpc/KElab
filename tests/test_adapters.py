@@ -7,13 +7,13 @@ from pathlib import Path
 from kelab import datasets, ke_validate
 from kelab.adapters import get_adapter
 from kelab.adapters.base import DomainPack, Item
-from kelab.adapters.conic import ConicAdapter
+from kelab.adapters.conic import Conic10KAdapter, ConicAdapter
 from kelab.config import ConfigError
 from kelab.packs import load_pack, resolve_domain_path
 from kelab.tasks import get_task
 from kelab.tasks.nl2ke import NL2KETask
 
-from tests.helpers import DOMAIN_TOML, PROMPT_MD, ROOT, TESTSET_XLSX, FakeChatHandler, MockServerMixin, load_conic
+from tests.helpers import DOMAIN_TOML, PROMPT_MD, ROOT, TESTSET_XLSX, MockServerMixin, load_conic
 
 
 def make_pack() -> DomainPack:
@@ -206,6 +206,77 @@ class PackLoaderTest(unittest.TestCase):
         self.assertIsNone(domain.task)
         # 与加字段前的哈希口径一致：None 键被排除
         self.assertEqual(12, len(config_hash(domain)))
+
+
+class Conic10KAdapterTest(unittest.TestCase):
+    """Conic10K 全量数据入口：审校记录目录 / train.json / jsonl 三种形态。"""
+
+    AUDIT_RECORD = {
+        "uuid": "0045c466-4cb2-4d3b-84cb-f11eca54d116",
+        "source": "conic_10k",
+        "query": {"question": "如果椭圆 x²/(10-m)+y²/(m+4)=1 的焦距为 4，则 m 的值为?",
+                  "lang": "zh"},
+        "gold_ke": {"content": "output = { m | G: Ellipse, FocalLength(G) = 4 };\n"},
+        "answer": {"type": "gold_expr", "gold_expr": {"content": "{1,5}"}},
+        "verification": {"answer_verified": True},
+        "tags": ["#analytic_geometry"],
+        "notes": "本体缺口…",
+    }
+
+    def setUp(self):
+        self.adapter = Conic10KAdapter()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_audit_record_dir(self):
+        rec_dir = Path(self.tmp.name) / "records"
+        rec_dir.mkdir()
+        (rec_dir / "0045.json").write_text(
+            json.dumps(self.AUDIT_RECORD, ensure_ascii=False), encoding="utf-8")
+        items = self.adapter.load(rec_dir)
+        self.assertEqual(1, len(items))
+        it = items[0]
+        self.assertEqual("0045c466-4cb2-4d3b-84cb-f11eca54d116", it.item_id)
+        self.assertIn("焦距", it.question)
+        self.assertIn("FocalLength", it.gold_ke)      # 审校记录自带 gold_ke
+        self.assertEqual("{1,5}", it.metadata["answer"])
+        self.assertEqual(["#analytic_geometry"], it.metadata["tags"])
+
+    def test_raw_train_json_list(self):
+        src = Path(self.tmp.name) / "train.json"
+        src.write_text(json.dumps([
+            {"id": "r1", "text": "求椭圆离心率", "expressions": "x^2/4+y^2=1"},
+            {"id": "r2", "problem": "求抛物线焦点"},
+        ], ensure_ascii=False), encoding="utf-8")
+        items = self.adapter.load(src)
+        self.assertEqual(["r1", "r2"], [it.item_id for it in items])
+        self.assertEqual("", items[0].gold_ke)        # 原始数据无 KE → 待标注
+        self.assertEqual("x^2/4+y^2=1", items[0].metadata["answer"])
+
+    def test_missing_question_fails_loud(self):
+        src = Path(self.tmp.name) / "bad.json"
+        src.write_text(json.dumps([{"id": "x", "foo": 1}]), encoding="utf-8")
+        with self.assertRaises(datasets.DataError):
+            self.adapter.load(src)
+
+    def test_registered(self):
+        self.assertEqual("conic10k", get_adapter("conic10k").name)
+
+
+class ConfigHashPinTest(unittest.TestCase):
+    """run_id 稳定性钉死：哈希口径一旦漂移，既有 run 全部失联（断点续跑/报告寻址）。"""
+
+    def test_conic_domain_hash_pinned(self):
+        from kelab.config import config_hash, load_domain
+
+        self.assertEqual("2a2a60c6495b", config_hash(load_domain(DOMAIN_TOML)))
+
+    def test_main_k_frozen_run_id_pinned(self):
+        from kelab.config import config_hash, load_domain, load_experiment
+
+        domain = load_domain(DOMAIN_TOML)
+        exp = load_experiment(ROOT / "configs" / "experiments" / "main-k-frozen.toml")
+        self.assertEqual("main-k-frozen-e64b4761b25c", f"{exp.name}-{config_hash(domain, exp)}")
 
 
 if __name__ == "__main__":

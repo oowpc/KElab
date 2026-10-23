@@ -48,16 +48,21 @@ def validate_candidates(items: list[Item], pack: DomainPack) -> list[GoldCandida
 
 
 def export_review(candidates: list[GoldCandidate], out_dir: Path | str) -> Path:
-    """导出人工复核队列：复核人在 human_verdict 填 pass/fail，可直接改 gold_ke。"""
+    """导出人工复核队列：复核人在 human_verdict 填 pass/fail，可直接改 gold_ke。
+
+    每行保留完整 Item（item 键）——source_id/dataset/note/metadata 全程不丢，
+    冻结后的 gold 能追回源数据；顶层 gold_ke 是可编辑镜像（复核人改这里）。
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / REVIEW_FILE
     with path.open("w", encoding="utf-8", newline="\n") as fh:
         for cand in candidates:
             fh.write(json.dumps({
+                "item": cand.item.to_dict(),
                 "item_id": cand.item.item_id,
                 "question": cand.item.question,
-                "gold_ke": cand.item.gold_ke,
+                "gold_ke": cand.item.gold_ke,   # 可编辑镜像：复核/标注改这里
                 "auto_ok": cand.auto_ok,
                 "auto_errors": cand.errors,
                 "auto_warnings": cand.warnings,
@@ -65,6 +70,19 @@ def export_review(candidates: list[GoldCandidate], out_dir: Path | str) -> Path:
                 "human_note": "",
             }, ensure_ascii=False) + "\n")
     return path
+
+
+def row_to_item(row: dict) -> Item:
+    """复核行 → Item：完整 item 键优先（溯源保留），旧版平铺行兜底兼容；
+    顶层 gold_ke（复核人可编辑）始终覆盖 item 内值。"""
+    if isinstance(row.get("item"), dict):
+        item = Item.from_dict(row["item"])
+    else:  # 旧格式：只有 item_id/question/gold_ke 三个字段
+        item = Item(item_id=row["item_id"], question=row["question"], gold_ke="")
+    edited = row.get("gold_ke")
+    if edited is not None and str(edited).strip():
+        item.gold_ke = datasets.normalize_ke_text(str(edited))
+    return item
 
 
 def load_review(path: Path | str) -> list[dict]:
@@ -108,8 +126,7 @@ def freeze(
     pending: list[str] = []
     rejected = 0
     for row in rows:
-        item = Item(item_id=row["item_id"], question=row["question"],
-                    gold_ke=datasets.normalize_ke_text(row["gold_ke"]))
+        item = row_to_item(row)  # 完整溯源（source_id/metadata 随 item 键保留）
         result = pack.adapter.validate_gold(item, pack)
         verdict = str(row.get("human_verdict") or "").strip().lower()
         if not result.ok:

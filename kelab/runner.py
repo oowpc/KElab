@@ -12,7 +12,6 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from pathlib import Path
 
 from nl2ke import clean_output, LLMError
 

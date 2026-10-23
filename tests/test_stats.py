@@ -23,6 +23,22 @@ class MeanCiTest(unittest.TestCase):
     def test_empty(self):
         self.assertEqual((None, None, None), stats.mean_ci([]))
 
+    def test_clamp_contains_proportion_bounds(self):
+        """比例指标 CI 截断 [0,1]：对称 t 外推不得越界（报告曾出现 101.5%）。"""
+        vals = [1.0, 1.0, 1.0, 0.6]  # 均值 0.9，t 半宽 0.318 → 未截断 hi=1.218
+        m, lo, hi = stats.mean_ci(vals, clamp=(0.0, 1.0))
+        self.assertAlmostEqual(0.9, m)
+        self.assertEqual(1.0, hi)
+        self.assertGreaterEqual(lo, 0.0)
+        _m, _lo, hi_raw = stats.mean_ci(vals)  # 不截断时确实越界（对照）
+        self.assertGreater(hi_raw, 1.0)
+
+    def test_no_clamp_allows_negative(self):
+        """配对差值等指标不传 clamp：负向越界保留（差值域 [-1,1]，不是比例）。"""
+        vals = [-0.2, -0.1, -0.3, 0.0] * 3
+        m, lo, hi = stats.mean_ci(vals)
+        self.assertLess(lo, m)
+
 
 class WilsonTest(unittest.TestCase):
     def test_bounds(self):

@@ -77,6 +77,23 @@ class DataPipelineTest(unittest.TestCase):
             {"testset": items[:1], "pool": items[1:]}, seed=42)
         self.assertEqual([], manifest["cross_partition_families"])
 
+    def test_manifest_uses_adapter_fingerprint(self):
+        """适配器指纹不是死代码：manifest 走 adapter.fingerprint。"""
+
+        class StubAdapter:
+            name = "stub"
+
+            def fingerprint(self, it):
+                return f"fp-{it.item_id}"
+
+        manifest = data_pipeline.build_manifest(
+            {"testset": [item("a", "题")]}, adapter=StubAdapter())
+        self.assertEqual({"a": "fp-a"}, manifest["partitions"]["testset"]["items"])
+        import hashlib
+
+        expected = hashlib.sha256("fp-a".encode("utf-8")).hexdigest()[:12]
+        self.assertEqual(expected, manifest["partitions"]["testset"]["fingerprint"])
+
     def test_write_manifest_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = data_pipeline.write_manifest(
@@ -170,6 +187,49 @@ class GoldPipelineTest(unittest.TestCase):
             (self.out_dir / gold_pipeline.MANIFEST_FILE).read_text(encoding="utf-8"))
         self.assertEqual({"in": 2, "frozen": 1, "rejected": 1}, manifest["counts"])
 
+    def test_freeze_preserves_provenance(self):
+        """冻结不丢溯源：source_id/dataset/note/metadata 随完整 item 键保留。"""
+        items = [Item(item_id="g1", question="题", gold_ke=GOOD_KE,
+                      source_id="conic10K-005", dataset="conic_10k", note="备注甲",
+                      metadata={"answer": "{1,5}", "tags": ["#syntax"]})]
+        cands = gold_pipeline.validate_candidates(items, self.pack)
+        path = gold_pipeline.export_review(cands, self.out_dir)
+        row = gold_pipeline.load_review(path)[0]
+        row["human_verdict"] = "pass"
+        path.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+        frozen = datasets.read_jsonl(
+            gold_pipeline.freeze(path, self.pack, self.out_dir, actor="王"))
+        it = frozen[0]
+        self.assertEqual("conic10K-005", it.source_id)
+        self.assertEqual("conic_10k", it.dataset)
+        self.assertEqual("备注甲", it.note)
+        self.assertEqual("{1,5}", it.metadata["answer"])
+        self.assertEqual(["#syntax"], it.metadata["tags"])
+        self.assertEqual("pass", it.metadata["gold_review"]["verdict"])
+
+    def test_row_to_item_legacy_flat_row(self):
+        """旧版平铺复核行（无 item 键）仍可加载——向后兼容。"""
+        row = {"item_id": "g1", "question": "题", "gold_ke": GOOD_KE,
+               "human_verdict": "pass"}
+        it = gold_pipeline.row_to_item(row)
+        self.assertEqual("g1", it.item_id)
+        self.assertEqual(GOOD_KE, it.gold_ke)
+
+    def test_empty_gold_pending_annotation(self):
+        """conic10k 扩题场景：gold_ke 为空 = 待标注，复核人填入后冻结通过。"""
+        cands = gold_pipeline.validate_candidates(
+            [item("g1", "题", "")], self.pack)
+        self.assertFalse(cands[0].auto_ok)  # 空 gold 自动校验不过
+        path = gold_pipeline.export_review(cands, self.out_dir)
+        row = gold_pipeline.load_review(path)[0]
+        row["gold_ke"] = GOOD_KE            # 标注人写入 gold KE
+        row["human_verdict"] = "pass"
+        path.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+        frozen = datasets.read_jsonl(
+            gold_pipeline.freeze(path, self.pack, self.out_dir, actor="王"))
+        self.assertEqual(GOOD_KE, frozen[0].gold_ke)
+        self.assertIn("focal_length", frozen[0].gold_operators)
+
 
 class PreregConsistencyTest(unittest.TestCase):
     def _prereg(self, exp: ExperimentConfig, created: str = "2026-01-01T00:00:00+00:00") -> dict:
@@ -245,6 +305,36 @@ class PreregConsistencyTest(unittest.TestCase):
             run_started_at="2026-02-01T00:00:00+00:00",
             history=[v1, v2])
         self.assertTrue(any("时序违规" in w for w in warnings))
+
+    def test_timing_violation_stands_when_dataset_differs(self):
+        """旧版参数一致但数据版本对不上（且无法对质）→ 时序违规成立。"""
+        exp = make_exp()
+        v1 = self._prereg(exp, created="2026-01-01T00:00:00+00:00")
+        v1["version"] = 1
+        v1["config"]["dataset_md5"] = "别的数据指纹"
+        v2 = self._prereg(exp, created="2026-06-01T00:00:00+00:00")
+        v2["version"] = 2
+        warnings = prereg.check_consistency(
+            v2, exp, dataset_md5_now="abc123", dataset_file_md5_now="raw999",
+            run_started_at="2026-02-01T00:00:00+00:00",
+            history=[v1, v2])
+        self.assertTrue(any("时序违规" in w for w in warnings))
+
+    def test_timing_downgraded_via_legacy_raw_md5(self):
+        """旧版用 32 位原始文件 md5（指纹统一前的算法）：与当前文件 md5 对质一致即可降级。"""
+        exp = make_exp()
+        v1 = self._prereg(exp, created="2026-01-01T00:00:00+00:00")
+        v1["version"] = 1
+        v1["config"]["dataset_md5"] = "5c24b69a42c6f0ca13950e890da48b1c"  # 旧算法
+        v2 = self._prereg(exp, created="2026-06-01T00:00:00+00:00")
+        v2["version"] = 2
+        warnings = prereg.check_consistency(
+            v2, exp, dataset_md5_now="abc123",
+            dataset_file_md5_now="5c24b69a42c6f0ca13950e890da48b1c",
+            run_started_at="2026-02-01T00:00:00+00:00",
+            history=[v1, v2])
+        self.assertFalse(any("时序违规" in w for w in warnings))
+        self.assertTrue(any("时序说明" in w and "v1" in w for w in warnings))
 
 
 if __name__ == "__main__":

@@ -4,7 +4,6 @@
 """
 from __future__ import annotations
 
-from pathlib import Path
 
 from ..config import load_experiment
 from ..prereg import create_prereg, load_prereg

@@ -8,8 +8,12 @@
         grammar.lark     # KE 语法
         ontology.json    # 可选（ontology_source="json" 时）
 
-旧单文件布局（configs/domains/<name>.toml，内部路径相对工作目录）继续可用，
-两种布局产出的 DomainConfig 字段值不因加载路径不同而改变（config_hash 稳定）。
+config_hash 的真实保证（不多承诺）：
+- 同一布局、同一内容、同一操作系统 → 哈希恒定（run_id 稳定，断点续跑有效）
+- 目录包路径以仓库相对形式存储（configs/domains/<name>/…），整仓移动安全；
+  移动/改名包目录本身 = 配置变更 = 新 run_id（与改任何配置同理，属设计行为）
+- 两种布局是两种配置身份：单文件 vs 目录的哈希不同——选布局即选身份，
+  跨机器/跨布局的内容一致性坐标是报告头部的 prompt md5 + grammar md5
 """
 from __future__ import annotations
 
@@ -43,8 +47,8 @@ def resolve_domain_path(ref: str | Path, root: Path | str = ".") -> Path:
 def _rebase_paths(domain: DomainConfig, pack_dir: Path) -> None:
     """目录布局：相对路径一律按包目录解析（包自包含，可整体移动）。
 
-    保持相对形式（不 resolve 成绝对路径），保证不同机器上 config_hash 一致。
-    只在目录布局下调用；单文件布局维持工作目录相对，不动。
+    存仓库相对形式（不 resolve 成绝对路径）：整仓换位置不改 config_hash；
+    包目录改名/移动则视为配置变更（新 run_id）。只在目录布局下调用。
     """
     def rebased(value: Path | None) -> Path | None:
         if value is None or value.is_absolute():

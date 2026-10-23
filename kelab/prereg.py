@@ -104,7 +104,6 @@ _CONSISTENCY_FIELDS = (
 )
 
 # 时序判定看「核心冻结参数」：这些在旧版里与当前版一致，旧版的登记时间即有效。
-# dataset_md5 除外——早期版本用的是旧指纹算法，字段值不可比（内容未变）
 _CORE_FIELDS = ("delta", "quality_gate", "review_rate", "scoring_protocol")
 _CORE_CONFIG_FIELDS = ("ks", "ns", "fixed_k", "retrievers", "repeats", "seeds",
                        "pool_strategy", "testset")
@@ -117,11 +116,25 @@ def _same_core(a: dict, b: dict) -> bool:
     return all(ca.get(f) == cb.get(f) for f in _CORE_CONFIG_FIELDS)
 
 
+def _dataset_vouched(
+    old_md5: str | None, dataset_md5_now: str | None, dataset_file_md5_now: str | None
+) -> bool:
+    """旧版登记的数据指纹 vs 当前数据，两种算法都可对质：
+    - 新算法（12 位 sha256 指纹）：与当前指纹相等
+    - 旧算法（32 位文件 md5）：与当前测试集原始 md5 相等
+    对不上（或当前证据缺失）→ 不能为旧版的数据版本背书。
+    """
+    if not old_md5:
+        return False
+    return old_md5 in {x for x in (dataset_md5_now, dataset_file_md5_now) if x}
+
+
 def check_consistency(
     prereg: dict,
     exp,
     *,
     dataset_md5_now: str | None = None,
+    dataset_file_md5_now: str | None = None,
     run_started_at: str | None = None,
     history: list[dict] | None = None,
 ) -> list[str]:
@@ -130,8 +143,9 @@ def check_consistency(
     consistency：预登记冻结的实验配置 vs 当前实验配置——改了 k 列表/检索器/
     重复数/数据集而没重登记，结论就不能引用预登记。
     timing：run 开始时间早于预登记时间 = 先看数后登记，预登记证明力失效。
-      例外：history 里存在核心冻结参数一致的更早版本且其登记早于 run 开始，
-      则时序仍然有效（当前版只是修订/修复），降级为「时序说明」。
+      例外：history 里存在核心冻结参数一致、且数据版本可对质（新指纹或旧
+      文件 md5 算法均认可）的更早版本，登记早于 run 开始——时序仍有效
+      （当前版只是修订/修复），降级为「时序说明」并引用该版哈希与理由。
     """
     warnings: list[str] = []
     frozen = prereg.get("config", {})
@@ -158,14 +172,19 @@ def check_consistency(
             row for row in (history or [])
             if row.get("version") != prereg.get("version")
             and _same_core(row, prereg)
+            and _dataset_vouched(
+                row.get("config", {}).get("dataset_md5"),
+                dataset_md5_now, dataset_file_md5_now)
             and (_parse_ts(row.get("created_at")) or started) <= started
         ]
         if earlier_valid:
             first = earlier_valid[0]
+            reason = f"；修订理由：{prereg.get('reason')}" if prereg.get("reason") else ""
             warnings.append(
                 f"时序说明：当前版 v{prereg.get('version')} 登记于 run 开始之后，"
-                f"但 v{first.get('version')}（{first.get('created_at')}）登记早于 run 开始"
-                f"（{run_started_at}）且核心冻结参数一致——时序有效，当前版为后续修订"
+                f"但 v{first.get('version')}（{first.get('created_at')}，哈希 "
+                f"{first.get('prereg_hash', '—')}）登记早于 run 开始（{run_started_at}），"
+                f"核心冻结参数与数据指纹均可对质一致——时序有效，当前版为后续修订{reason}"
             )
         else:
             warnings.append(

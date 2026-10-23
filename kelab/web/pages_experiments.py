@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import statistics
-import time
 from pathlib import Path
 
 from ..aggregate import aggregate_run
@@ -360,8 +359,6 @@ def page_domains(app: WebApp, query: dict) -> bytes:
     def pct(v):
         return f"{v * 100:.1f}%" if v is not None else "—"
     summary_rows.sort(key=lambda r: (r[2]["best_semantic"] or -1), reverse=True)
-    from ..aggregate import mde_estimate
-    from ..interpret import top_finding
 
     rows_html = "".join(
         f"<tr><td class='mono'>{ESC(run_id)}</td><td>{ESC(domain)}</td>"

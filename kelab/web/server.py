@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import sys
-import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -26,7 +24,7 @@ from .pages_runs import (_failure_categories, page_failures, page_gens, page_log
                          page_review, page_run, page_runs)
 from .pages_settings import (page_settings, post_settings_clear, post_settings_save,
                              post_settings_test)
-from .ui import ESC, layout, progress_bar, eta_text
+from .ui import ESC, progress_bar, eta_text
 
 # ---------------------------------------------------------------- HTTP 层
 

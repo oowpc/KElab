@@ -5,7 +5,7 @@ from pathlib import Path
 
 from ..config import file_md5
 from .app import WebApp
-from .ui import ESC, layout, _checkbox, _input
+from .ui import ESC, layout
 
 # ---------------------------------------------------------------- 配置编辑
 

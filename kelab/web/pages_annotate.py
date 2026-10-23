@@ -6,16 +6,14 @@
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from .. import datasets, prompts as prompt_mod, retrieve as retrieve_mod, ke_validate
-from ..config import load_domain
 from ..datasets import Item
 from ..llm import chat_with_usage, LLMError
 from ..ontology import load_ontology
 from .app import WebApp
-from .ui import ESC, chip, layout
+from .ui import ESC, layout
 
 STAGING_DIR = Path("data") / "derived"
 
@@ -131,7 +129,7 @@ def page_annotate_draft(app: WebApp, form: dict) -> bytes:
         errs = "".join(f"<span class='issue'>[error] {ESC(e)}</span><br>" for e in s["errors"])
         warns = "".join(f"<span class='muted'>[warn] {ESC(w)}</span><br>" for w in s["warnings"])
         if not errs and not warns:
-            return f"<span class='chip ok'>语法 ✓ light ✓</span>"
+            return "<span class='chip ok'>语法 ✓ light ✓</span>"
         return errs + warns
 
     body = f"""<h1>标注工作台 · 草稿</h1>

@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import statistics
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .aggregate import ConditionMetrics, marginal_gains
 from .config import ExperimentConfig

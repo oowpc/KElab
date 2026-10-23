@@ -1,7 +1,6 @@
 """Prompt 页：模板编辑/校验、组装预览、版本历史/diff/恢复。"""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from ..config import ConfigError, file_md5, load_experiment
@@ -269,7 +268,7 @@ def page_prompt_diff(app: WebApp, query: dict) -> bytes:
                 lines.append(f"<span style='color:var(--blue)'>{ESC(line)}</span>")
             else:
                 lines.append(ESC(line))
-        content = f"<div class='ke-box mono' style='max-height:70vh;overflow:auto'>" \
+        content = "<div class='ke-box mono' style='max-height:70vh;overflow:auto'>" \
                   + "<br>".join(lines) + "</div>"
     body = (f"<h1>Prompt diff：{ESC(domain_name)}</h1><div class='card'>{content}</div>"
             f"<p><a href='/prompts/history?domain={ESC(domain_name)}'>← 返回历史</a></p>")

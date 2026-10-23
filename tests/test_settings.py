@@ -61,7 +61,7 @@ class SettingsFileTest(unittest.TestCase):
             self.assertEqual("env-key", cfg.api_key)
 
     def test_embed_config_reads_settings_file(self):
-        from kelab.retrieve import _embed_config, DenseError
+        from kelab.retrieve import _embed_config
 
         with tempfile.TemporaryDirectory() as tmp:
             save_api_settings(

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import urllib.parse
-from pathlib import Path
 
 from ..aggregate import aggregate_run
 from ..datasets import count_lines as _count_lines

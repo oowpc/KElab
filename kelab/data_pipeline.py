@@ -13,17 +13,19 @@ import json
 from pathlib import Path
 
 from . import datasets
-from .adapters.base import Item, default_fingerprint
+from .adapters.base import DatasetAdapter, Item, default_fingerprint
 
 
-def item_fingerprint(item: Item) -> str:
-    """单条内容指纹（默认算法；领域适配器可覆盖）。"""
-    return default_fingerprint(item)
+def item_fingerprint(item: Item, adapter: DatasetAdapter | None = None) -> str:
+    """单条内容指纹：优先用领域适配器算法（缺省 default_fingerprint）。"""
+    return adapter.fingerprint(item) if adapter else default_fingerprint(item)
 
 
-def partition_fingerprint(items: list[Item]) -> str:
+def partition_fingerprint(
+    items: list[Item], adapter: DatasetAdapter | None = None
+) -> str:
     """一个分区的内容指纹：逐条指纹排序后聚合（与顺序无关）。"""
-    parts = sorted(item_fingerprint(it) for it in items)
+    parts = sorted(item_fingerprint(it, adapter) for it in items)
     return hashlib.sha256(":".join(parts).encode("utf-8")).hexdigest()[:12]
 
 
@@ -46,11 +48,13 @@ def build_manifest(
     seed: int | None = None,
     family_threshold: float = 0.72,
     source: str | None = None,
+    adapter: DatasetAdapter | None = None,
 ) -> dict:
     """汇总一次 prepare 的可审计清单。
 
     partitions 形如 {"testset": [...], "dev": [...], "pool": [...]}（没有的键省略）。
     题族在全体条目上划分后标注到各分区——跨分区同族意味着泄露风险，直接列出。
+    指纹经领域适配器算法（adapter 缺省时用通用默认）。
     """
     all_items = [it for part in partitions.values() for it in part]
     family_of = assign_families(all_items, family_threshold) if all_items else {}
@@ -62,9 +66,9 @@ def build_manifest(
             fams.setdefault(family_of[it.item_id], []).append(it.item_id)
         section[name] = {
             "count": len(part),
-            "fingerprint": partition_fingerprint(part),
+            "fingerprint": partition_fingerprint(part, adapter),
             "families": {fid: sorted(ids) for fid, ids in sorted(fams.items())},
-            "items": {it.item_id: item_fingerprint(it)
+            "items": {it.item_id: item_fingerprint(it, adapter)
                       for it in sorted(part, key=lambda x: x.item_id)},
         }
 

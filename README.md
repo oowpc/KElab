@@ -28,13 +28,15 @@ python -m kelab.cli web --port 8765 --open
 ```
 
 之后的工作全在看板里：数据准备 → 启动实验（先试跑几题）→ 看曲线/对比 → 失败分类/人工抽检 → 拿报告。
-跑测试验证安装：`python -m unittest discover -s tests`（全部 mock，不调 API）。
+跑测试验证安装：`python -m unittest discover -s tests`（258 个平台测试，全部 mock，不调 API；另有原 nl2ke 的 11 个：`python -m unittest test_nl2ke`）。
 
 ## 常用命令速查
 
 ```bash
 python -m kelab.cli doctor [--ping]     # 环境自检（+可选 API 实调）
-python -m kelab.cli prepare --domain configs/domains/conic.toml --xlsx 标注.xlsx [--split 100]
+python -m kelab.cli prepare --domain configs/domains/conic.toml --source 标注.xlsx [--split 100]
+python -m kelab.cli gold --domain conic --source 候选目录/ --out-dir data/gold/conic   # gold 流水线
+python -m kelab.cli gold --domain conic --out-dir data/gold/conic --freeze --actor 姓名  # 复核后冻结
 python -m kelab.cli run --exp configs/experiments/smoke_k.toml [--dry-run] [--limit 5]
 python -m kelab.cli smoke --domain configs/domains/conic.toml --xlsx testset20.xlsx
 python -m kelab.cli web --port 8765 [--open]
@@ -90,11 +92,18 @@ python -m kelab.cli web --port 8765 [--open]
 - **抽检口径统一**：看板队列与 report 导出的 review_sample.csv 是同一套样本（按条件分层等距抽样，比例取领域配置 review_sample_rate）
 - **异常兜底**：单条失败记 error 不中断；断点续跑；被 kill 的 run 自动标「已中断」
 
-## 换领域
+## 换领域（两层架构：通用内核 + 领域包）
 
-1. 加 `configs/domains/<域>.toml`（语法、prompt 模板、本体来源 prompt|json、judge 配置）
-2. `/prepare` 导入该域数据（列映射存领域 `[xlsx]` 节）+ 切分出测试集与 fixed 池
-3. 加 `configs/experiments/<实验>.toml` → `/launch` 启动
+1. 复制 `configs/domains/_template/` 为 `configs/domains/<域>/`，改写 domain.toml
+   （[pack] 节声明 adapter/task）+ 换 prompt/grammar/ontology 资源
+2. 新数据格式或新 gold 规则 → `kelab/adapters/` 加一个 DatasetAdapter 并注册；
+   非 KE 任务（问答 EM/F1 等）→ `kelab/tasks/` 加 TaskAdapter。**runner/store/report 不用改**
+3. gold 数据入库走 `kelab gold` 流水线：候选导入 → 规则校验 → 人工复核 → 冻结 manifest
+4. 加 `configs/experiments/<实验>.toml` → `/launch` 启动
+
+## 安全边界
+
+看板只绑定 `127.0.0.1`（本机回环），无鉴权/CSRF 防护——**不要通过隧道/反代暴露到公网**。
 
 ## 待接（阶段 3）
 

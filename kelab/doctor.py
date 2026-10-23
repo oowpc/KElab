@@ -102,7 +102,7 @@ def _check_domains(root: Path) -> list[Check]:
             ))
             continue
         checks.append(Check(f"领域 {domain.name}：语法与模板", True,
-                            f"grammar md5 匹配、prompt 模板在位"))
+                            "grammar md5 匹配、prompt 模板在位"))
     return checks
 
 

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -192,12 +191,41 @@ def _col_map_for(args: argparse.Namespace) -> dict | None:
     return col_map
 
 
+def _validate_and_attach(items, pack) -> None:
+    """gold 全量校验（fail-fast）+ 预提取算子。
+
+    两道都过适配器：adapter.validate_gold = 领域规则（gold 能不能用），
+    task.validate_output = 任务机制（解析 + 算子提取）。gold 非法即停工。
+    """
+    failures: list[str] = []
+    for item in items:
+        result = pack.adapter.validate_gold(item, pack)
+        if not result.ok:
+            failures.append(f"{item.item_id}: {'; '.join(result.errors)}")
+            continue
+        task_val = pack.task.validate_output(item.gold_ke, pack.domain, pack.ontology)
+        if not task_val.parse_ok:
+            failures.append(f"{item.item_id}: 任务层解析失败: {task_val.parse_error}")
+            continue
+        item.gold_operators = task_val.operators
+    if failures:
+        raise DataError(
+            "gold 校验失败（gold 必须全部合法，否则实验口径不成立）：\n"
+            + "\n".join(failures)
+        )
+
+
 def cmd_prepare(args: argparse.Namespace) -> int:
-    domain, ontology, _, grammar_md5 = _load_domain_and_ontology(Path(args.domain))
-    xlsx = Path(args.xlsx)
+    from .packs import load_pack
+
+    pack = load_pack(args.domain)
+    grammar_md5 = pack.grammar_md5
+    if not (args.source or args.xlsx):
+        raise CliError("需要数据源：--source 或 --xlsx（格式由领域适配器解释）")
+    source = Path(args.source or args.xlsx)
     if args.dev and not args.split:
         raise CliError("--dev 需配合 --split 使用（开发集只在三分切分时存在）")
-    items = datasets.import_xlsx(xlsx, col_map=_col_map_for(args))
+    items = pack.adapter.load(source, col_map=_col_map_for(args))
     items, dedupe = datasets.dedupe_items(items)
     if dedupe["dropped_question_dups"] or dedupe["same_ke_groups"]:
         print(f"去重：{dedupe['in']} → {dedupe['out']} 条"
@@ -206,19 +234,19 @@ def cmd_prepare(args: argparse.Namespace) -> int:
               + f"；KE 结构相同 {len(dedupe['same_ke_groups'])} 组（保留，人工复核）"
               + (f"：{dedupe['same_ke_groups']}" if dedupe['same_ke_groups'] else "") + "）",
               file=sys.stderr)
-    datasets.attach_gold_operators(items, domain.grammar_path, ontology)
-    out = Path(args.out) if args.out else DEFAULT_DERIVED / f"{xlsx.stem}.jsonl"
+    _validate_and_attach(items, pack)
+    out = Path(args.out) if args.out else DEFAULT_DERIVED / f"{source.stem}.jsonl"
 
     pool_path: Path | None = Path(args.pool_out) if args.pool_out else None
     if args.split:
         testset, dev, pool = datasets.split_dataset3(
             items, args.split, dev_size=args.dev, seed=args.split_seed)
         datasets.write_jsonl(testset, out)
-        pool_path = pool_path or DEFAULT_DERIVED / f"{xlsx.stem}_pool.jsonl"
+        pool_path = pool_path or DEFAULT_DERIVED / f"{source.stem}_pool.jsonl"
         datasets.write_jsonl(pool, pool_path)
         dev_note = ""
         if dev:
-            dev_path = DEFAULT_DERIVED / f"{xlsx.stem}_dev.jsonl"
+            dev_path = DEFAULT_DERIVED / f"{source.stem}_dev.jsonl"
             datasets.write_jsonl(dev, dev_path)
             dev_note = f"；开发集 {len(dev)} 题 → {dev_path}（流程调试/判分器校准用，不计主结果）"
         items_for_leakage = testset
@@ -243,15 +271,23 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     partitions = {"testset": testset, "pool": pool} if args.split else {"testset": items}
     if args.split and dev:
         partitions["dev"] = dev
+    if not args.split and strategy == "fixed" and isinstance(pools, list):
+        partitions["pool"] = pools  # fixed 池也进 manifest：跨分区题族检查才有意义
     manifest = data_pipeline.build_manifest(
-        partitions, seed=args.split_seed if args.split else None, source=str(xlsx))
+        partitions, seed=args.split_seed if args.split else None,
+        source=str(source), adapter=pack.adapter)
     manifest_path = data_pipeline.write_manifest(manifest, out.parent / "_manifest.json")
     print(f"manifest：{manifest_path}（题族 {manifest['family_count']} 个）", file=sys.stderr)
-    if manifest["cross_partition_families"]:
-        print(f"⚠️ 跨分区题族 {manifest['cross_partition_families']}：近重复题落在不同分区，"
-              "有泄露通道，请人工复核", file=sys.stderr)
 
-    print(f"gold KE 全部通过 lark 解析 + light 检查（grammar md5 {grammar_md5}）", file=sys.stderr)
+    cross = manifest["cross_partition_families"]
+    if cross and not getattr(args, "allow_cross_family", False):
+        # 协议口径：近重复题跨分区 = 泄露通道，fail-fast（显式放行除外）
+        print(f"错误：跨分区题族 {cross}——近重复题落在不同分区，泄露通道未闭合。\n"
+              "请调整切分（题族整族切分是默认口径），或确认无误后加 --allow-cross-family 放行。",
+              file=sys.stderr)
+        return 1
+
+    print(f"gold 全部通过适配器规则校验 + 算子预提取（grammar md5 {grammar_md5}）", file=sys.stderr)
     print(f"泄露检查：{'通过 ✓' if leakage['passed'] else '未通过 ✗'}（{report_path}）", file=sys.stderr)
     if not leakage["passed"]:
         print(json.dumps(leakage["hits"], ensure_ascii=False, indent=2), file=sys.stderr)
@@ -367,14 +403,15 @@ def cmd_smoke(args: argparse.Namespace) -> int:
     """一条命令从池跑到曲线：prepare → run(k) → run(n) → report×2 → 汇总。"""
     domain_path = Path(args.domain)
     exp_k = load_experiment(args.exp_k)
-    exp_n = load_experiment(args.exp_n)
+    load_experiment(args.exp_n)  # 提前校验 N 实验配置可读（循环里才真正使用）
 
     # prepare（测试集不存在或 --force-prepare 时重跑）
     if args.force_prepare or not exp_k.testset.exists():
         prepare_args = argparse.Namespace(
             domain=str(domain_path), xlsx=args.xlsx, out=str(exp_k.testset),
-            pool_strategy="loo", pool=None, col=None,
+            pool_strategy="loo", pool=None, col=None, source=None,
             split=None, dev=0, split_seed=42, pool_out=None,
+            allow_cross_family=False,
         )
         code = cmd_prepare(prepare_args)
         if code != 0:
@@ -407,10 +444,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kelab", description="NL→KE few-shot 实验平台")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("prepare", help="xlsx → testset.jsonl + gold 校验 + 泄露检查")
-    p.add_argument("--domain", required=True)
-    p.add_argument("--xlsx", required=True)
-    p.add_argument("--out", help="输出 jsonl 路径（默认 data/derived/<xlsx名>.jsonl）")
+    p = sub.add_parser("prepare", help="数据源 → testset.jsonl + gold 校验 + 泄露检查（走领域适配器）")
+    p.add_argument("--domain", required=True,
+                   help="领域（configs/domains/<name>/ 目录包或 <name>.toml）")
+    p.add_argument("--xlsx", help="数据源（xlsx/jsonl/记录目录，格式由领域适配器解释）")
+    p.add_argument("--source", help="--xlsx 的别名（领域通用叫法）")
+    p.add_argument("--out", help="输出 jsonl 路径（默认 data/derived/<源名>.jsonl）")
     p.add_argument("--pool-strategy", default="loo", choices=["loo", "fixed"])
     p.add_argument("--pool", help="fixed 策略的池 jsonl")
     p.add_argument("--col", action="append",
@@ -419,6 +458,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dev", type=int, default=0, help="开发集题数（流程调试/判分器校准用）")
     p.add_argument("--split-seed", type=int, default=42)
     p.add_argument("--pool-out", help="切分时池的输出路径")
+    p.add_argument("--allow-cross-family", action="store_true",
+                   help="显式放行跨分区题族（默认 fail-fast：近重复题跨分区即停工）")
     p.set_defaults(func=cmd_prepare)
 
     p = sub.add_parser("run", help="跑实验（断点续跑）")

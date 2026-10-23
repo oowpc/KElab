@@ -6,7 +6,10 @@ on:
 
 jobs:
   unittest:
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -16,3 +19,17 @@ jobs:
       # 全部 mock，零 API 调用；test_nl2ke 是原 nl2ke.py 的测试
       - run: python -m unittest discover -s tests
       - run: python -m unittest test_nl2ke
+      - run: pip install coverage
+      - run: coverage run -m unittest discover -s tests
+      - run: coverage report --include="kelab/*" --show-missing
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # E9=致命语法/运行错误，F=pyflakes（未用 import/变量、未定义名）
+      - run: pip install ruff
+      - run: ruff check --select E9,F kelab/ tests/ nl2ke.py test_nl2ke.py
