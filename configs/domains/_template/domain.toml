@@ -1,0 +1,33 @@
+# 新领域包配置模板：复制本目录为 configs/domains/<name>/ 后改写。
+# 相对路径相对本目录解析（包自包含）。
+
+[domain]
+name = "template"
+grammar = "grammar.lark"
+# grammar_md5 = "<填入 KE-matcher 版语法 md5，防误用旧版>"
+prompt_template = "prompt.md"
+ontology_source = "prompt"     # prompt | json
+# ontology_json = "ontology.json"
+question_format = "输入：{question}\n\n输出："
+
+[pack]
+adapter = "conic"              # kelab/adapters/ 注册名；新数据格式先实现 DatasetAdapter
+task = "nl2ke"                 # kelab/tasks/ 注册名；NL→KE 用 nl2ke
+
+[generation]
+model = "deepseek-flash"
+temperature = 0.0
+max_concurrency = 4
+max_retries = 3
+timeout = 120.0
+# max_tokens = 2048            # 防失控长输出（可选）
+
+[judge]
+model = "deepseek-chat"
+# score_map = { equivalent = 1.0, minor = 0.5, different = 0.0 }
+review_sample_rate = 0.10
+
+# [xlsx]                        # xlsx 数据源列映射（字段=列名）
+# item_id = "题目"
+# question = "题干"
+# gold_ke = "KE"

@@ -20,13 +20,10 @@ from .config import (
     ExperimentConfig,
     config_hash,
     file_md5,
-    load_domain,
     load_experiment,
-    verify_grammar_md5,
 )
 from .datasets import DataError
 from .llm import resolve_api
-from .ontology import load_ontology
 from .report import render_report
 from .store import Store
 
@@ -43,20 +40,17 @@ class CliError(RuntimeError):
 
 def _load_domain_and_ontology(domain_path: Path) -> tuple[DomainConfig, object, str, str]:
     """返回 (domain_cfg, ontology, template_text, grammar_md5)。grammar md5 不匹配时 fail-fast。"""
-    domain = load_domain(domain_path)
-    grammar_md5 = verify_grammar_md5(domain)
-    try:
-        template = Path(domain.prompt_template).read_text(encoding="utf-8")
-    except OSError as exc:
-        raise CliError(f"无法读取 prompt 模板 {domain.prompt_template}: {exc}") from exc
-    ontology = load_ontology(
-        domain.ontology_source, prompt_text=template, json_path=domain.ontology_json
-    )
-    return domain, ontology, template, grammar_md5
+    from .packs import load_pack
+
+    pack = load_pack(domain_path)
+    return pack.domain, pack.ontology, pack.template, pack.grammar_md5
 
 
 def _default_domain_path(name: str) -> Path:
-    return DEFAULT_DOMAIN_DIR / f"{name}.toml"
+    """领域解析：优先 configs/domains/<name>/ 目录包，退回 <name>.toml。"""
+    from .packs import resolve_domain_path
+
+    return resolve_domain_path(name)
 
 
 def _dataset_fingerprint(exp: ExperimentConfig) -> str:
@@ -73,7 +67,11 @@ def _build_resources(
     need_api: bool,
     dry_run: bool = False,
 ) -> tuple[runner.RunResources, str]:
-    domain, ontology, template, grammar_md5 = _load_domain_and_ontology(domain_path)
+    from .packs import load_pack
+
+    pack = load_pack(domain_path)
+    domain, ontology, template, grammar_md5 = (
+        pack.domain, pack.ontology, pack.template, pack.grammar_md5)
     testset = datasets.read_jsonl(exp.testset)
     pools = datasets.load_pools(exp.pool_strategy, testset, exp.pool)
     leakage = datasets.check_leakage(testset, pools, exp.pool_strategy)
@@ -163,6 +161,7 @@ def _build_resources(
         judge_client=judge_client,
         store=store,
         run_id=run_id,
+        task=pack.task,
     )
     return res, run_id
 
@@ -176,7 +175,10 @@ def _col_map_for(args: argparse.Namespace) -> dict | None:
     try:
         import tomllib
 
-        raw = tomllib.loads(Path(args.domain).read_text(encoding="utf-8"))
+        domain_ref = Path(args.domain)
+        if domain_ref.is_dir():
+            domain_ref = domain_ref / "domain.toml"  # 目录包布局
+        raw = tomllib.loads(domain_ref.read_text(encoding="utf-8"))
         if "xlsx" in raw:
             col_map = {k: v for k, v in raw["xlsx"].items()}
     except (OSError, tomllib.TOMLDecodeError):
@@ -235,6 +237,20 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     report_path = out.parent / "_leakage_report.json"
     datasets.save_leakage_report(leakage, report_path)
 
+    # 数据流水线 manifest：分区指纹 + 题族划分 + 逐条指纹（版本可追踪、切分可审计）
+    from . import data_pipeline
+
+    partitions = {"testset": testset, "pool": pool} if args.split else {"testset": items}
+    if args.split and dev:
+        partitions["dev"] = dev
+    manifest = data_pipeline.build_manifest(
+        partitions, seed=args.split_seed if args.split else None, source=str(xlsx))
+    manifest_path = data_pipeline.write_manifest(manifest, out.parent / "_manifest.json")
+    print(f"manifest：{manifest_path}（题族 {manifest['family_count']} 个）", file=sys.stderr)
+    if manifest["cross_partition_families"]:
+        print(f"⚠️ 跨分区题族 {manifest['cross_partition_families']}：近重复题落在不同分区，"
+              "有泄露通道，请人工复核", file=sys.stderr)
+
     print(f"gold KE 全部通过 lark 解析 + light 检查（grammar md5 {grammar_md5}）", file=sys.stderr)
     print(f"泄露检查：{'通过 ✓' if leakage['passed'] else '未通过 ✗'}（{report_path}）", file=sys.stderr)
     if not leakage["passed"]:
@@ -260,11 +276,12 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def _report_one(exp_path: str, domain_path: Path | None, provisional: bool) -> Path:
+    from .packs import load_pack
     from .prereg import load_prereg
 
     exp = load_experiment(exp_path)
     domain_path = domain_path or _default_domain_path(exp.domain)
-    domain = load_domain(domain_path)
+    domain = load_pack(domain_path).domain
     run_id = f"{exp.name}-{config_hash(domain, exp)}"
     store = Store(Path("runs") / run_id / "kelab.sqlite")
     if store.run_info(run_id) is None:
@@ -303,6 +320,46 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     checks = run_checks(Path("."), ping=args.ping)
     print(format_report(checks), file=sys.stderr)
     return 0 if all(c.ok for c in checks) else 1
+
+
+def cmd_gold(args: argparse.Namespace) -> int:
+    """gold 流水线：候选导入 → 规则校验 → 人工复核队列 → 冻结 manifest。"""
+    from . import gold_pipeline
+    from .packs import load_pack
+
+    pack = load_pack(args.domain)
+    out_dir = Path(args.out_dir)
+    if args.freeze:
+        if not args.actor:
+            raise CliError("冻结必须声明复核人：--actor 姓名")
+        review = Path(args.review) if args.review else out_dir / gold_pipeline.REVIEW_FILE
+        if not review.exists():
+            raise CliError(f"找不到复核文件 {review}（先不带 --freeze 跑一次生成复核队列）")
+        frozen = gold_pipeline.freeze(
+            review, pack, out_dir,
+            actor=args.actor, allow_unreviewed=args.allow_unreviewed,
+        )
+        print(f"冻结完成 → {frozen}（manifest: {out_dir / gold_pipeline.MANIFEST_FILE}）",
+              file=sys.stderr)
+        return 0
+
+    source = args.source or args.xlsx
+    if not source:
+        raise CliError("需要数据源：--source 候选文件（xlsx/jsonl）")
+    col_map = _col_map_for(args)
+    items = gold_pipeline.import_candidates(source, pack.adapter, col_map=col_map)
+    candidates = gold_pipeline.validate_candidates(items, pack)
+    review_path = gold_pipeline.export_review(candidates, out_dir)
+    ok = sum(1 for c in candidates if c.auto_ok)
+    bad = [c for c in candidates if not c.auto_ok]
+    print(f"候选 {len(candidates)} 条：规则校验通过 {ok} 条、未过 {len(bad)} 条", file=sys.stderr)
+    for cand in bad[:10]:
+        print(f"  ✗ {cand.item.item_id}: {'; '.join(cand.errors)}", file=sys.stderr)
+    print(f"人工复核队列 → {review_path}（填 human_verdict=pass/fail，可直接改 gold_ke）",
+          file=sys.stderr)
+    print("复核完成后冻结：python -m kelab.cli gold --domain <领域> --out-dir "
+          f"{out_dir} --freeze --actor <复核人>", file=sys.stderr)
+    return 0
 
 
 def cmd_smoke(args: argparse.Namespace) -> int:
@@ -386,6 +443,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ping", action="store_true",
                    help="额外实调一次 API（约几十个 token），验证模型可用")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("gold", help="gold 流水线：候选导入→规则校验→人工复核→冻结")
+    p.add_argument("--domain", required=True, help="领域（configs/domains/<name>/ 或 <name>.toml）")
+    p.add_argument("--source", help="候选数据文件（xlsx/jsonl，格式由领域适配器解释）")
+    p.add_argument("--xlsx", help="--source 的别名")
+    p.add_argument("--out-dir", default="data/gold", help="流水线产物目录（默认 data/gold）")
+    p.add_argument("--col", action="append", help="列映射覆盖（xlsx 源，同 prepare）")
+    p.add_argument("--freeze", action="store_true", help="冻结：复核文件 → frozen.jsonl + manifest")
+    p.add_argument("--review", help="复核文件路径（默认 <out-dir>/_review.jsonl）")
+    p.add_argument("--actor", help="复核人/决策人（冻结必填）")
+    p.add_argument("--allow-unreviewed", action="store_true",
+                   help="允许规则校验通过但未填人工结论的条目冻结（manifest 标记）")
+    p.set_defaults(func=cmd_gold)
 
     p = sub.add_parser("web", help="本地 Web 看板（运行进度/指标/明细/人工抽检）")
     p.add_argument("--port", type=int, default=8765)

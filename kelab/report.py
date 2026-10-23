@@ -652,6 +652,17 @@ def _build_markdown(
     axis_name = "k" if exp.kind == "k" else "N"
     n_items = evaluated_items or len(testset)  # 试跑/中断按实际评估题数（MDE 不虚高）
     models_text = "、".join(exp.gen_models) if exp.gen_models else domain.gen_model
+    # 预登记一致性/时序校验（consistency：配置漂移；timing：先看数后登记）
+    prereg_warnings: list[str] = []
+    if prereg:
+        from .config import dataset_fingerprint
+        from .prereg import check_consistency
+
+        fp_now = dataset_fingerprint(exp) if Path(exp.testset).exists() else None
+        prereg_warnings = check_consistency(
+            prereg, exp, dataset_md5_now=fp_now,
+            run_started_at=run_info["started_at"] if run_info else None,
+        )
     lines: list[str] = [
         f"# 实验报告：{exp.name}（{axis_name} 扫描）",
         "",
@@ -667,6 +678,8 @@ def _build_markdown(
          if prereg else "- 预登记：未登记（报告阈值取实验配置；协议要求先登记再看数）"),
         "",
     ]
+    for warning in prereg_warnings:
+        lines += [f"> ⚠️ 预登记校验：{warning}", ""]
     if provisional:
         lines += [PROVISIONAL_NOTE, ""]
 

@@ -49,6 +49,10 @@ class DomainConfig:
     onto_always_include: list[str] | None = None
     # 生成 max_tokens 上限（防失控长输出烧钱；None = 不限制，不进哈希）
     gen_max_tokens: int | None = None
+    # 领域包声明（[pack] 节）：数据适配器 / 任务适配器名。
+    # None = 旧配置未声明，按平台默认 conic/nl2ke 解析（None 不进配置哈希）
+    adapter: str | None = None
+    task: str | None = None
 
 
 @dataclass
@@ -110,6 +114,7 @@ def load_domain(path: Path | str) -> DomainConfig:
     gen = raw.get("generation", {})
     judge = raw.get("judge", {})
     exe = raw.get("execution", {})
+    pack = raw.get("pack", {})
 
     cfg = DomainConfig(
         name=d["name"],
@@ -147,6 +152,8 @@ def load_domain(path: Path | str) -> DomainConfig:
         gen_max_tokens=(
             int(gen["max_tokens"]) if gen.get("max_tokens") else None
         ),
+        adapter=str(pack["adapter"]) if pack.get("adapter") else None,
+        task=str(pack["task"]) if pack.get("task") else None,
     )
     if cfg.ontology_source not in {"prompt", "json"}:
         raise ConfigError(f"ontology_source 只能是 prompt|json，得到 {cfg.ontology_source!r}")

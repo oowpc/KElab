@@ -205,9 +205,12 @@ class MiniExperimentTest(MockServerMixin):
         """校验阶段意外异常 → 该行标 error（不留「ok 但无判分」脏行），且批次不中断。"""
         from unittest.mock import patch
 
+        from kelab import ke_validate
+
         exp = make_exp()
         res = self.build_resources(self.make_tmpdir(), exp)
-        with patch.object(runner.ke_validate, "validate_ke",
+        # 任务适配器底层调 ke_validate.validate_ke；在权威模块上打桩
+        with patch.object(ke_validate, "validate_ke",
                           side_effect=RuntimeError("校验器炸了")):
             stats = runner.run_experiment(res)
         self.assertEqual(8, stats["error"])

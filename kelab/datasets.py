@@ -1,49 +1,26 @@
 """数据集与候选池：xlsx 导入、JSONL 读写、LOO 池、嵌套池、泄露检查。
 
 泄露零容忍是方案硬性要求：prepare 阶段 fail-fast，命中即视为测试失败。
+
+Item 的权威定义在 adapters/base.py（第一层内核）；此处 re-export 保持既有
+import 路径不变。split/题族/近重复/manifest 的流水线封装见 data_pipeline.py。
 """
 from __future__ import annotations
 
 import json
 import random
 import re
-from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 import openpyxl
 
 from . import ke_validate
+from .adapters.base import Item  # noqa: F401  （re-export，兼容旧 import 路径）
 from .ontology import Ontology
 
 
 class DataError(ValueError):
     pass
-
-
-@dataclass
-class Item:
-    item_id: str
-    question: str
-    gold_ke: str
-    gold_operators: list[str] = field(default_factory=list)
-    source_id: str | None = None
-    dataset: str | None = None
-    note: str | None = None
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, raw: dict) -> "Item":
-        return cls(
-            item_id=raw["item_id"],
-            question=raw["question"],
-            gold_ke=raw["gold_ke"],
-            gold_operators=list(raw.get("gold_operators") or []),
-            source_id=raw.get("source_id"),
-            dataset=raw.get("dataset"),
-            note=raw.get("note"),
-        )
 
 
 # testset20.xlsx 默认列映射（可通过参数覆盖以适配其它表）
