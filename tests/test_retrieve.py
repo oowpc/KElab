@@ -3,6 +3,8 @@ import unittest
 from kelab import retrieve
 from kelab.datasets import Item
 
+from tests.helpers import FakeChatHandler, MockServerMixin
+
 
 def doc(item_id: str, question: str, ops: list[str] | None = None) -> Item:
     return Item(item_id=item_id, question=question, gold_ke="ke",
@@ -93,6 +95,55 @@ class RetrieveEntryTest(unittest.TestCase):
     def test_unknown_retriever_raises(self):
         with self.assertRaises(ValueError):
             retrieve.retrieve("不存在", doc("q", "题"), POOL, k=1, seed=1)
+
+
+class DenseEmbeddingTest(MockServerMixin):
+    """dense 检索的 embedding 调用：分批、缓存、错位宁报错不错配。"""
+
+    def _settings(self, base_url: str):
+        import tempfile
+        from pathlib import Path
+
+        from kelab.settings import save_api_settings
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        save_api_settings(
+            {"base_url": base_url, "api_key": "sk-test",
+             "embed_base_url": base_url, "embed_api_key": "sk-test",
+             "embed_model": "mock-embed"},
+            Path(tmp.name) / "configs" / "api.json")
+        return tmp.name
+
+    def test_misaligned_embeddings_fail_loud(self):
+        import os
+
+        base_url = self.start_mock()
+        tmpdir = self._settings(base_url)
+        FakeChatHandler.embed_short = True
+        self.addCleanup(setattr, FakeChatHandler, "embed_short", False)
+        cwd = os.getcwd()
+        try:
+            os.chdir(tmpdir)
+            with self.assertRaises(retrieve.DenseError) as caught:
+                retrieve._embed_texts(["甲", "乙", "丙"], cache_dir=None)
+            self.assertIn("缺返回", str(caught.exception))
+        finally:
+            os.chdir(cwd)
+
+    def test_full_embeddings_ok(self):
+        import os
+
+        base_url = self.start_mock()
+        tmpdir = self._settings(base_url)
+        cwd = os.getcwd()
+        try:
+            os.chdir(tmpdir)
+            vecs = retrieve._embed_texts(["甲", "乙"], cache_dir=None)
+            self.assertEqual(2, len(vecs))
+            self.assertEqual([0.0, 1.0], vecs[0])
+        finally:
+            os.chdir(cwd)
 
 
 if __name__ == "__main__":

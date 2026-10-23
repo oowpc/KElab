@@ -57,6 +57,12 @@ DEFAULT_COL_MAP = {
 }
 
 
+def count_lines(path: Path | str) -> int:
+    """统计 jsonl 非空行数（with 块确保句柄关闭）。"""
+    with open(path, encoding="utf-8") as fh:
+        return sum(1 for line in fh if line.strip())
+
+
 def normalize_ke_text(text: str) -> str:
     """gold KE 空白归一化（多行带缩进 → 单行单空格）。"""
     return " ".join(str(text).split())

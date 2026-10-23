@@ -147,7 +147,8 @@ def process_one(
             retrieval = retrieve.RetrievalResult(items=picked, warning=warning)
         else:
             retrieval = retrieve.retrieve(
-                condition.retriever, item, pool, condition.k, seed
+                condition.retriever, item, pool, condition.k, seed,
+                universe=res.testset if isinstance(res.pools, dict) else None,
             )
 
         # 本体注入对照：linked 模式按相关性来源裁剪本体（默认检索式，泄露安全）
@@ -297,6 +298,17 @@ def run_experiment(res: RunResources, dry_run: bool = False) -> dict:
     stats = {"ok": 0, "error": 0, "skipped": 0}
 
     for cond in conditions:
+        # 预算上限（协议 §7.6：成本超预算先暂停；已到的不受影响）
+        if exp.budget_calls:
+            spent = res.store.total_generations(res.run_id)
+            if spent >= exp.budget_calls:
+                res.store.set_note(
+                    res.run_id,
+                    f"预算上限触发：{spent}/{exp.budget_calls} 次调用已满，"
+                    f"条件 {cond.condition_id} 起未跑（补预算后断点续跑即可）",
+                )
+                _log(f"[预算上限] 已用 {spent} 次调用 ≥ 预算 {exp.budget_calls}，停止后续条件")
+                break
         pending = res.store.pending(res.run_id, cond.condition_id, item_ids, exp.repeats)
         skipped = len(item_ids) * exp.repeats - len(pending)
         stats["skipped"] += skipped

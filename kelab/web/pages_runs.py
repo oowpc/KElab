@@ -6,6 +6,7 @@ import urllib.parse
 from pathlib import Path
 
 from ..aggregate import aggregate_run
+from ..datasets import count_lines as _count_lines
 from ..store import Store
 from .app import WebApp
 from .ui import (ESC, PAGE_SIZE, POLL_JS, chip, eta_text, flag_chip, layout,
@@ -148,7 +149,7 @@ def page_run(app: WebApp, run_id: str, query: dict | None = None) -> bytes:
         n_items = 0
         testset_path = app.root / exp.testset
         if testset_path.exists():
-            n_items = sum(1 for line in testset_path.open(encoding="utf-8") if line.strip())
+            n_items = _count_lines(testset_path)
         mde = mde_estimate(n_items)
         reviews = app.get_reviews(run_id)
         agree, total_reviewed = review_agreement(store, run_id, reviews)

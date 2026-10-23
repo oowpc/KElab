@@ -47,6 +47,8 @@ class DomainConfig:
     annotation_cost_per_item: float | None = None
     # 本体注入对照：linked 模式下无论如何都保留的算子（None = 空，不进配置哈希）
     onto_always_include: list[str] | None = None
+    # 生成 max_tokens 上限（防失控长输出烧钱；None = 不限制，不进哈希）
+    gen_max_tokens: int | None = None
 
 
 @dataclass
@@ -76,6 +78,8 @@ class ExperimentConfig:
     # 质量门槛（协议 §7.6 选择规则）：语义等价率须 ≥ 该值才进入「最低成本 k」选择；
     # None = 不设门槛，只报曲线不宣称最优 k。None 不进配置哈希
     quality_gate: float | None = None
+    # 预算上限（生成调用数；None = 不限。超限自动停跑并写 run 备注。None 不进哈希）
+    budget_calls: int | None = None
     # 拐点判定阈值（边际增益首次低于该值的档位）
     knee_threshold: float = 0.05
     std_alert: float = 0.03
@@ -140,6 +144,9 @@ def load_domain(path: Path | str) -> DomainConfig:
             [str(x) for x in gen["onto_always_include"]]
             if gen.get("onto_always_include") else None
         ),
+        gen_max_tokens=(
+            int(gen["max_tokens"]) if gen.get("max_tokens") else None
+        ),
     )
     if cfg.ontology_source not in {"prompt", "json"}:
         raise ConfigError(f"ontology_source 只能是 prompt|json，得到 {cfg.ontology_source!r}")
@@ -181,6 +188,7 @@ def load_experiment(path: Path | str) -> ExperimentConfig:
         onto_linking=str(e["onto_linking"]) if e.get("onto_linking") else None,
         gen_models=[str(x) for x in e["gen_models"]] if e.get("gen_models") else None,
         quality_gate=float(e["quality_gate"]) if e.get("quality_gate") is not None else None,
+        budget_calls=int(e["budget_calls"]) if e.get("budget_calls") else None,
         knee_threshold=float(e.get("knee_threshold", 0.05)),
         std_alert=float(e.get("std_alert", 0.03)),
         oracle_gap_threshold=float(e.get("oracle_gap_threshold", 0.05)),
@@ -214,6 +222,8 @@ def load_experiment(path: Path | str) -> ExperimentConfig:
         raise ConfigError("gen_models 要么不写（用领域默认模型），要么至少一个模型名")
     if cfg.quality_gate is not None and not 0.0 <= cfg.quality_gate <= 1.0:
         raise ConfigError(f"quality_gate 须在 [0,1]，得到 {cfg.quality_gate}")
+    if cfg.budget_calls is not None and cfg.budget_calls < 1:
+        raise ConfigError(f"budget_calls 须 ≥1，得到 {cfg.budget_calls}")
     return cfg
 
 

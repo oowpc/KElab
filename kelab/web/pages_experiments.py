@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..aggregate import aggregate_run
 from ..config import ConfigError, load_experiment
+from ..datasets import count_lines as _count_lines
 from .app import WebApp
 from .ui import ESC, chip, layout, _fmt_pct
 
@@ -273,7 +274,7 @@ def _one_finding(app: WebApp, exp, metrics, agree: int, total: int) -> str:
     n_items = 0
     testset_path = app.root / exp.testset
     if testset_path.exists():
-        n_items = sum(1 for line in testset_path.open(encoding="utf-8") if line.strip())
+        n_items = _count_lines(testset_path)
     findings = interpret_run(metrics, exp, mde_estimate(n_items),
                              review_agree=agree, review_total=total)
     for f in findings:

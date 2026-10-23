@@ -31,11 +31,19 @@ class FakeChatHandler(BaseHTTPRequestHandler):
     ke_content = 'output = { focal_length(C) | C: Hyperbola, get_expression(C) = sympy_expression("Eq(x**2 - y**2, 1)") };'
     verdict_content = '{"verdict": "equivalent", "rationale": "mock 判等"}'
     fail_on_marker: str | None = None  # user 消息含该标记时返回 500
+    embed_short = False  # /embeddings 故意少返回一条（错位测试）
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length).decode("utf-8")
         type(self).requests.append(json.loads(body))
+        if self.path.endswith("/embeddings"):
+            inputs = json.loads(body).get("input", [])
+            data = [{"index": i, "embedding": [float(i), 1.0]} for i in range(len(inputs))]
+            if type(self).embed_short and data:
+                data = data[:-1]  # 故意少一条
+            self._respond(200, {"data": data})
+            return
         model = json.loads(body).get("model", "")
         if type(self).fail_on_marker and type(self).fail_on_marker in body:
             self._respond(500, {"error": {"message": "injected failure"}})

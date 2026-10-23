@@ -320,6 +320,13 @@ class Store:
                 " WHERE run_id=? AND status='ok'", (run_id,),
             ).fetchone()["c"]
 
+    def total_generations(self, run_id: str) -> int:
+        """run 的全部生成行数（预算上限/进度用）。"""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(*) c FROM generations WHERE run_id=?", (run_id,),
+            ).fetchone()["c"]
+
     def pending(
         self, run_id: str, condition_id: str, item_ids: list[str], repeats: int
     ) -> list[tuple[str, int]]:

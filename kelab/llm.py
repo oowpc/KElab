@@ -39,6 +39,7 @@ class ClientConfig:
     temperature: float = 0.0
     timeout: float = 120.0
     max_retries: int = 3
+    max_tokens: int | None = None  # 输出上限（防失控长输出烧钱；None = 不限制）
 
 
 def resolve_api(
@@ -91,6 +92,8 @@ def _post_once(cfg: ClientConfig, messages: Sequence[dict[str, str]]) -> tuple[s
         "temperature": cfg.temperature,
         "stream": False,
     }
+    if cfg.max_tokens:
+        payload["max_tokens"] = cfg.max_tokens
     request = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),

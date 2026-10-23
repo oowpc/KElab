@@ -80,10 +80,13 @@ class BM25Index:
 _index_cache: dict[int, BM25Index] = {}
 
 
-def _bm25_index_for(pool: list[Item]) -> BM25Index:
-    key = hash(tuple(it.item_id for it in pool))
+def _bm25_index_for(docs: list[Item], universe: list[Item] | None = None) -> BM25Index:
+    """BM25 索引按「文档宇宙」缓存。LOO 时调用方传 universe=全集：
+    每题的池只差 1 条，用全集算 idf 偏差可忽略，但索引从 O(n²) 降到 O(n)。"""
+    corpus = universe if universe else docs
+    key = hash(tuple(it.item_id for it in corpus))
     if key not in _index_cache:
-        _index_cache[key] = BM25Index([tokenize(it.question) for it in pool])
+        _index_cache[key] = BM25Index([tokenize(it.question) for it in corpus])
     return _index_cache[key]
 
 
@@ -101,9 +104,19 @@ def _retrieve_random(query: Item, pool: list[Item], seed: int) -> list[Item]:
     return order
 
 
-def _retrieve_bm25(query: Item, pool: list[Item]) -> list[Item]:
-    index = _bm25_index_for(pool)
-    return _rank(index.scores(tokenize(query.question)), pool)
+def _retrieve_bm25(
+    query: Item, pool: list[Item], universe: list[Item] | None = None
+) -> list[Item]:
+    if universe is None or len(universe) == len(pool):
+        index = _bm25_index_for(pool)
+        return _rank(index.scores(tokenize(query.question)), pool)
+    # LOO：索引建在宇宙上（O(n)），打分后只保留池成员
+    index = _bm25_index_for(pool, universe=universe)
+    universe_scores = index.scores(tokenize(query.question))
+    pos = {it.item_id: i for i, it in enumerate(universe)}
+    scored = [(universe_scores[pos[it.item_id]], it) for it in pool]
+    order = sorted(range(len(scored)), key=lambda i: (-scored[i][0], scored[i][1].item_id))
+    return [scored[i][1] for i in order]
 
 
 def _retrieve_oracle(query: Item, pool: list[Item]) -> list[Item]:
@@ -219,6 +232,10 @@ def _embed_texts(texts: list[str], cache_dir: Path | None) -> list[list[float]]:
             cache_path(texts[i]).write_text(
                 json.dumps(vec), encoding="utf-8"
             )
+    missing = [i for i, r in enumerate(results) if r is None]
+    if missing:
+        # 宁可报错也不静默错位（少返回的向量会让文本与向量错配）
+        raise DenseError(f"embeddings 缺返回：{len(missing)}/{len(texts)} 条未拿到向量")
     return [r for r in results if r is not None]
 
 
@@ -244,9 +261,11 @@ def _retrieve_hybrid(query: Item, pool: list[Item]) -> list[Item]:
 
 
 def retrieve(
-    name: str, query: Item, pool: list[Item], k: int, seed: int
+    name: str, query: Item, pool: list[Item], k: int, seed: int,
+    universe: list[Item] | None = None,
 ) -> RetrievalResult:
-    """从 pool 为 query 检索 top-k 示例（有序）。k<=0 返回空；k>池大小兜底全池+warning。"""
+    """从 pool 为 query 检索 top-k 示例（有序）。k<=0 返回空；k>池大小兜底全池+warning。
+    universe：LOO 时传全集，BM25 索引建在宇宙上（O(n²)→O(n)）。"""
     if k <= 0 or not pool:
         return RetrievalResult(items=[])
     warning = None
@@ -256,7 +275,7 @@ def retrieve(
     if name == "random":
         ranked = _retrieve_random(query, pool, seed)
     elif name == "bm25":
-        ranked = _retrieve_bm25(query, pool)
+        ranked = _retrieve_bm25(query, pool, universe)
     elif name == "oracle":
         ranked = _retrieve_oracle(query, pool)
     elif name == "frozen":

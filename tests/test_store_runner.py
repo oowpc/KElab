@@ -47,6 +47,8 @@ class MiniExperimentTest(MockServerMixin):
                                     temperature=0.0, timeout=10.0, max_retries=1)
         store = Store(Path(tmp) / "test.sqlite")
         self.addCleanup(store.close)
+        # 与 cli.cmd_run 一致：先建行，runner 的备注/状态更新才有落点
+        store.create_run("test-run", "{}", "hash", None, None)
         return runner.RunResources(
             domain=domain, exp=exp, template=template, ontology=ontology,
             testset=ITEMS, pools=datasets.loo_pools(ITEMS),
@@ -188,6 +190,16 @@ class MiniExperimentTest(MockServerMixin):
                 "test-run", "k-frozen-k2")[1 - rep]["retrieved_ids"])
             # 两题各自剔除自身后，交集非空（共享同一全局序列）
             self.assertTrue(set(a) & set(b))
+
+    def test_budget_calls_stops_run(self):
+        """预算上限：跑满预算即停，条件只跑了一部分，run 备注写明。"""
+        exp = make_exp(budget_calls=4)  # 预算 4 条生成
+        res = self.build_resources(self.make_tmpdir(), exp)
+        stats = runner.run_experiment(res)
+        self.assertEqual(4, stats["ok"])     # 只有第一个条件（4 条）跑了
+        self.assertEqual(4, res.store.total_generations("test-run"))
+        note = res.store.run_info("test-run")["note"]
+        self.assertIn("预算上限触发", note)
 
     def test_validation_crash_marks_error_row(self):
         """校验阶段意外异常 → 该行标 error（不留「ok 但无判分」脏行），且批次不中断。"""

@@ -62,6 +62,17 @@ class ChatWithUsageTest(MockServerMixin):
         self.assertIn("401", str(caught.exception))
         self.assertEqual(1, len(FakeChatHandler.requests))
 
+    def test_max_tokens_sent_when_set(self):
+        client = self.make_client()
+        client.max_tokens = 256
+        llm.chat_with_usage(client, [{"role": "user", "content": "题"}])
+        self.assertEqual(256, FakeChatHandler.requests[-1].get("max_tokens"))
+
+    def test_max_tokens_absent_by_default(self):
+        client = self.make_client()
+        llm.chat_with_usage(client, [{"role": "user", "content": "题"}])
+        self.assertNotIn("max_tokens", FakeChatHandler.requests[-1])
+
 
 if __name__ == "__main__":
     unittest.main()

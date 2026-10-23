@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import ConfigError, load_experiment
+from ..datasets import count_lines as _count_lines
 from ..store import Store
 from .ui import ESC
 
@@ -110,7 +111,7 @@ class WebApp:
         if exp is not None:
             testset = self.root / exp.testset
             if testset.exists():
-                n_items = sum(1 for line in testset.open(encoding="utf-8") if line.strip())
+                n_items = _count_lines(testset)
                 limit = exp.limit_items or self._run_limit(store, run_id)
                 if limit:
                     n_items = min(n_items, limit)
@@ -482,7 +483,7 @@ class WebApp:
         testset = self.root / exp.testset
         n_items = 0
         if testset.exists():
-            n_items = sum(1 for line in testset.open(encoding="utf-8") if line.strip())
+            n_items = _count_lines(testset)
         if exp.limit_items:
             n_items = min(n_items, exp.limit_items)
         n_onto = len(exp.onto_modes or ["full"])

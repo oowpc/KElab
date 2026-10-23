@@ -9,6 +9,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from ..datasets import count_lines as _count_lines
 from .app import WebApp
 from .pages_configs import page_config_edit, page_configs, post_config_save
 from .pages_experiments import page_compare, page_domains, page_grid, page_launch
@@ -328,7 +329,7 @@ def api_progress(app: WebApp, run_id: str) -> bytes:
         if exp is not None:
             testset = app.root / exp.testset
             if testset.exists():
-                n_items = sum(1 for line in testset.open(encoding="utf-8") if line.strip())
+                n_items = _count_lines(testset)
                 limit = exp.limit_items or app._run_limit(store, run_id)
                 if limit:
                     n_items = min(n_items, limit)

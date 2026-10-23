@@ -145,6 +145,7 @@ def _build_resources(
                     timeout=domain.gen_timeout,
                     max_retries=domain.gen_max_retries,
                 )
+                gen_clients[model].max_tokens = domain.gen_max_tokens
             judge_client = resolve_api(
                 domain.judge_model, temperature=0.0, max_retries=domain.gen_max_retries
             )
