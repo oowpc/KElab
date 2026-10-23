@@ -277,7 +277,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def _report_one(exp_path: str, domain_path: Path | None, provisional: bool) -> Path:
     from .packs import load_pack
-    from .prereg import load_prereg
+    from .prereg import load_history, load_prereg
 
     exp = load_experiment(exp_path)
     domain_path = domain_path or _default_domain_path(exp.domain)
@@ -291,6 +291,7 @@ def _report_one(exp_path: str, domain_path: Path | None, provisional: bool) -> P
     report_path = render_report(
         store, run_id, exp, domain, testset, Path("results") / run_id,
         provisional=provisional, prereg=load_prereg(Path("."), exp.name),
+        prereg_history=load_history(Path("."), exp.name),
     )
     store.close()
     return report_path

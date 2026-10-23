@@ -76,11 +76,45 @@ def create_prereg(
     return payload
 
 
+def load_history(root: Path, exp_name: str) -> list[dict]:
+    """同一实验的预登记历史（含当前版），按版本升序。"""
+    path = prereg_dir(root) / "prereg_history.jsonl"
+    if not path.exists():
+        return []
+    rows: list[dict] = []
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("experiment") == exp_name:
+                rows.append(row)
+    rows.sort(key=lambda r: r.get("version", 0))
+    return rows
+
+
 # 预登记与实验配置必须一致的字段（不一致 = 配置漂移，应重新登记）
 _CONSISTENCY_FIELDS = (
     "ks", "ns", "fixed_k", "retrievers", "repeats", "seeds",
     "pool_strategy", "testset", "dataset_md5",
 )
+
+# 时序判定看「核心冻结参数」：这些在旧版里与当前版一致，旧版的登记时间即有效。
+# dataset_md5 除外——早期版本用的是旧指纹算法，字段值不可比（内容未变）
+_CORE_FIELDS = ("delta", "quality_gate", "review_rate", "scoring_protocol")
+_CORE_CONFIG_FIELDS = ("ks", "ns", "fixed_k", "retrievers", "repeats", "seeds",
+                       "pool_strategy", "testset")
+
+
+def _same_core(a: dict, b: dict) -> bool:
+    if any(a.get(f) != b.get(f) for f in _CORE_FIELDS):
+        return False
+    ca, cb = a.get("config", {}), b.get("config", {})
+    return all(ca.get(f) == cb.get(f) for f in _CORE_CONFIG_FIELDS)
 
 
 def check_consistency(
@@ -89,12 +123,15 @@ def check_consistency(
     *,
     dataset_md5_now: str | None = None,
     run_started_at: str | None = None,
+    history: list[dict] | None = None,
 ) -> list[str]:
     """预登记一致性 + 时序校验。返回警告列表（空 = 全部一致）。
 
     consistency：预登记冻结的实验配置 vs 当前实验配置——改了 k 列表/检索器/
     重复数/数据集而没重登记，结论就不能引用预登记。
-    timing：run 开始时间早于预登记时间 = 先看数后冻结，预登记证明力失效。
+    timing：run 开始时间早于预登记时间 = 先看数后登记，预登记证明力失效。
+      例外：history 里存在核心冻结参数一致的更早版本且其登记早于 run 开始，
+      则时序仍然有效（当前版只是修订/修复），降级为「时序说明」。
     """
     warnings: list[str] = []
     frozen = prereg.get("config", {})
@@ -117,10 +154,24 @@ def check_consistency(
     started = _parse_ts(run_started_at)
     created = _parse_ts(prereg.get("created_at"))
     if started and created and started < created:
-        warnings.append(
-            f"时序违规：run 开始于 {run_started_at}，早于预登记时间 "
-            f"{prereg.get('created_at')}——先看数后登记，预登记证明力失效"
-        )
+        earlier_valid = [
+            row for row in (history or [])
+            if row.get("version") != prereg.get("version")
+            and _same_core(row, prereg)
+            and (_parse_ts(row.get("created_at")) or started) <= started
+        ]
+        if earlier_valid:
+            first = earlier_valid[0]
+            warnings.append(
+                f"时序说明：当前版 v{prereg.get('version')} 登记于 run 开始之后，"
+                f"但 v{first.get('version')}（{first.get('created_at')}）登记早于 run 开始"
+                f"（{run_started_at}）且核心冻结参数一致——时序有效，当前版为后续修订"
+            )
+        else:
+            warnings.append(
+                f"时序违规：run 开始于 {run_started_at}，早于预登记时间 "
+                f"{prereg.get('created_at')}——先看数后登记，预登记证明力失效"
+            )
     return warnings
 
 

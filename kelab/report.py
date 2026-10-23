@@ -550,6 +550,7 @@ def render_report(
     out_dir: Path,
     provisional: bool = False,
     prereg: dict | None = None,
+    prereg_history: list[dict] | None = None,
 ) -> Path:
     """生成 results/<run_id>/ 下的 metrics.csv、图与 report.md。"""
     out_dir = Path(out_dir)
@@ -622,6 +623,7 @@ def render_report(
         },
         n_review=n_review,
         prereg=prereg,
+        prereg_history=prereg_history,
         primary_model=primary_model,
         evaluated_items=evaluated_items or None,
     )
@@ -645,6 +647,7 @@ def _build_markdown(
     figures: dict[str, tuple[str, bool]],
     n_review: int,
     prereg: dict | None = None,
+    prereg_history: list[dict] | None = None,
     primary_model: str | None = None,
     evaluated_items: int | None = None,
 ) -> str:
@@ -662,6 +665,7 @@ def _build_markdown(
         prereg_warnings = check_consistency(
             prereg, exp, dataset_md5_now=fp_now,
             run_started_at=run_info["started_at"] if run_info else None,
+            history=prereg_history,
         )
     lines: list[str] = [
         f"# 实验报告：{exp.name}（{axis_name} 扫描）",
@@ -679,7 +683,8 @@ def _build_markdown(
         "",
     ]
     for warning in prereg_warnings:
-        lines += [f"> ⚠️ 预登记校验：{warning}", ""]
+        icon = "ℹ️" if warning.startswith("时序说明") else "⚠️"
+        lines += [f"> {icon} 预登记校验：{warning}", ""]
     if provisional:
         lines += [PROVISIONAL_NOTE, ""]
 

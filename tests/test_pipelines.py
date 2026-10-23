@@ -218,6 +218,34 @@ class PreregConsistencyTest(unittest.TestCase):
             run_started_at="2026-01-01T00:00:00+00:00")
         self.assertTrue(any("时序违规" in w for w in warnings))
 
+    def test_timing_downgraded_when_earlier_version_predates_run(self):
+        """v2 是 run 开始后的修订版，但 v1 核心参数一致且登记早于 run → 时序有效。"""
+        exp = make_exp()
+        v1 = self._prereg(exp, created="2026-01-01T00:00:00+00:00")
+        v1["version"] = 1
+        v2 = self._prereg(exp, created="2026-06-01T00:00:00+00:00")
+        v2["version"] = 2
+        warnings = prereg.check_consistency(
+            v2, exp, dataset_md5_now="abc123",
+            run_started_at="2026-02-01T00:00:00+00:00",
+            history=[v1, v2])
+        self.assertFalse(any("时序违规" in w for w in warnings))
+        self.assertTrue(any("时序说明" in w and "v1" in w for w in warnings))
+
+    def test_timing_violation_stands_when_core_changed(self):
+        """旧版虽早但核心参数被改过 → 不适用降级，时序违规成立。"""
+        exp = make_exp()
+        v1 = self._prereg(exp, created="2026-01-01T00:00:00+00:00")
+        v1["version"] = 1
+        v1["delta"] = 0.10  # 核心参数不同
+        v2 = self._prereg(exp, created="2026-06-01T00:00:00+00:00")
+        v2["version"] = 2
+        warnings = prereg.check_consistency(
+            v2, exp, dataset_md5_now="abc123",
+            run_started_at="2026-02-01T00:00:00+00:00",
+            history=[v1, v2])
+        self.assertTrue(any("时序违规" in w for w in warnings))
+
 
 if __name__ == "__main__":
     unittest.main()
