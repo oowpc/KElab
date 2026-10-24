@@ -121,24 +121,57 @@ def page_home(app: WebApp) -> bytes:
             f"<span class='muted'>完整自检：终端执行 <code>python -m kelab.cli doctor</code></span></div>"
         )
     else:
-        doctor_html = (
-            f"<div class='card' style='border-color:var(--good)'>"
-            f"环境自检全部通过 ✓（{len(checks)} 项）。"
-            f"想验证模型可用性：<code>python -m kelab.cli doctor --ping</code>（约几十个 token）</div>"
-        )
-    body = f"""<h1>kelab 实验平台 · 工作流向导</h1>
+        doctor_html = ""
+
+    # 当前状态条：运行中 / 待抽检 / 未预登记（一屏看清「现在该干嘛」）
+    runs = app.list_runs()
+    running = sum(1 for r in runs if r["status"] == "running")
+    pending_review = 0
+    for r in runs:
+        if r["status"] != "done":
+            continue
+        try:
+            pending_review += app.review_queue_count(r["run_id"])
+        except Exception:
+            pass
+    n_unprereg = 0
+    try:
+        from ..prereg import load_prereg
+        from ..config import load_experiment as _load_exp
+        for toml in app.experiments_dir.glob("*.toml"):
+            try:
+                if load_prereg(app.root, _load_exp(toml).name) is None:
+                    n_unprereg += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    status_html = f"""<div class='statstrip'>
+<div class='stat'><b>{running}</b><span>运行中</span></div>
+<div class='stat'><b>{pending_review}</b><span>待抽检条目</span></div>
+<div class='stat'><b>{n_unprereg}</b><span>未预登记实验</span></div>
+</div>
+<div class='cta-row'>
+<a class='btn' href='/prepare'>准备数据 →</a>
+<a class='btn' href='/launch'>启动实验 →</a>
+<a class='btn ghost' href='/runs'>看结果 →</a>
+</div>"""
+    body = f"""<h1>kelab 实验平台</h1>
 {doctor_html}
+{status_html}
 <div class='card'>这个平台回答两个问题：<b>few-shot 给几条 gold KE 示例（k）？</b>
 <b>从多大的候选池里挑（N）？</b>做法是固定其余一切（prompt 模板、模型、温度、判分），
-只动一个因子，看语义等价率怎么变。下面一张图看懂全部流程。</div>
+只动一个因子，看语义等价率怎么变。</div>
 <style>{_FLOW_CSS}</style>
+<details class='card'><summary><b>数据流图与核心概念</b>（第一次用建议读一遍）</summary>
 <h2>数据流（每步点链接可去对应页面）</h2>
 {_flow()}
 <h2>核心概念（只看这些就够）</h2>
-<div class='card'><table class='concept'>{_concepts()}</table></div>
+<table class='concept'>{_concepts()}</table>
 <h2>三步上手</h2>
-<div class='card'>{_steps()}</div>
+{_steps()}
 <h2>页面导航</h2>
 <div class='grid2'>{_nav_cards()}</div>
+</details>
 """
-    return layout("工作流向导", body)
+    return layout("工作流向导", body, active="home")

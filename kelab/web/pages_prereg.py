@@ -12,6 +12,10 @@ from .ui import ESC, layout
 
 
 def page_prereg(app: WebApp, query: dict) -> bytes:
+    from ..config import dataset_fingerprint, file_md5
+    from ..prereg import check_consistency, load_history
+
+    runs = app.list_runs()
     rows = []
     exp_dir = app.root / "configs" / "experiments"
     if exp_dir.is_dir():
@@ -21,14 +25,39 @@ def page_prereg(app: WebApp, query: dict) -> bytes:
             except Exception:
                 continue
             reg = load_prereg(app.root, exp.name)
-            if reg:
-                status = (f"<span class='chip ok'>已登记 v{reg['version']}</span> "
-                          f"<span class='mono muted'>{reg['prereg_hash']}</span> "
-                          f"<span class='muted'>{ESC(reg['created_at'])} · {ESC(reg['actor'])}</span>")
-                action = (f"<a href='/prereg/edit?exp={ESC(exp.name)}'>改（留历史）</a>")
-            else:
+            if not reg:
                 status = "<span class='chip warn'>未登记</span>"
                 action = f"<a href='/prereg/edit?exp={ESC(exp.name)}'>去登记 →</a>"
+            else:
+                # 有效性校验：一致性（配置/数据漂移）+ 时序（先看数后登记）
+                fp_now = raw_now = None
+                testset = app.root / exp.testset
+                if testset.exists():
+                    fp_now = dataset_fingerprint(exp, root=app.root)
+                    raw_now = file_md5(testset)
+                started = next((r["started_at"] for r in runs
+                                if r["run_id"].startswith(exp.name + "-")), None)
+                warnings = check_consistency(
+                    reg, exp, dataset_md5_now=fp_now, dataset_file_md5_now=raw_now,
+                    run_started_at=started,
+                    history=load_history(app.root, exp.name))
+                drift = [w for w in warnings if "不一致" in w]
+                timing_bad = [w for w in warnings if "时序违规" in w]
+                timing_note = [w for w in warnings if "时序说明" in w]
+                if drift:
+                    status = "<span class='chip err'>配置漂移</span>"
+                elif timing_bad:
+                    status = "<span class='chip err'>晚登记（先看数后登记）</span>"
+                elif timing_note:
+                    status = "<span class='chip ok'>有效（修订版）</span>"
+                else:
+                    status = "<span class='chip ok'>有效</span>"
+                status += (f" <span class='mono muted'>v{reg['version']} {reg['prereg_hash']}</span> "
+                           f"<span class='muted'>{ESC(reg['created_at'][:16])} · "
+                           f"{ESC(reg['actor'])}</span>")
+                for w in warnings:
+                    status += f"<br><span class='muted' style='font-size:12px'>{ESC(w)}</span>"
+                action = f"<a href='/prereg/edit?exp={ESC(exp.name)}'>改（留历史）</a>"
             rows.append(
                 f"<tr><td class='mono'>{ESC(exp.name)}</td>"
                 f"<td>{ESC(exp.domain)}</td><td>{exp.kind}</td><td>{status}</td>"
@@ -40,8 +69,11 @@ def page_prereg(app: WebApp, query: dict) -> bytes:
     return layout("预登记", f"<h1>预登记（跑主实验前冻结口径）</h1>{flash}"
                 f"<div class='card'>{table}"
                 "<p class='muted'>协议 §7.5：δ 与最小实际意义差异须在查看测试集结果前由决策人确认。"
-                "登记内容：拐点阈值 δ、质量门槛、抽检比例、判分口径、配置与数据指纹哈希。"
-                "改动留历史（version 自增），不覆盖旧版。</p></div>")
+                "状态口径：<b>有效</b>=配置/数据/时序全对上；<b>有效（修订版）</b>=当前版晚于 run 但更早版"
+                "核心参数与数据可对质一致；<b>配置漂移</b>=登记后改过配置（须重新登记）；"
+                "<b>晚登记</b>=先看数后登记（结论不能引用预登记）。"
+                "改动留历史（version 自增），不覆盖旧版。</p></div>",
+                active="prereg")
 
 
 def page_prereg_edit(app: WebApp, query: dict) -> bytes:
@@ -105,8 +137,9 @@ def post_prereg_save(app: WebApp, form: dict) -> str:
             return "抽检比例须在 (0, 1]"
     except ValueError:
         return "质量门槛/抽检比例必须是数字"
-    from ..config import file_md5
-    dataset_md5 = file_md5(app.root / exp.testset) if (app.root / exp.testset).exists() else ""
+    from ..config import dataset_fingerprint
+    # 数据指纹与 run 守卫同算法（早期用文件原始 md5，已统一；旧版靠对质兼容）
+    dataset_md5 = dataset_fingerprint(exp, root=app.root) if (app.root / exp.testset).exists() else ""
     payload = create_prereg(
         app.root, exp, dataset_md5=dataset_md5, delta=delta,
         quality_gate=quality_gate, review_rate=review_rate,

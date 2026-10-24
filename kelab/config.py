@@ -261,12 +261,14 @@ def file_md5(path: Path | str) -> str:
     return hashlib.md5(Path(path).read_bytes()).hexdigest()
 
 
-def dataset_fingerprint(exp: "ExperimentConfig") -> str:
+def dataset_fingerprint(exp: "ExperimentConfig", root: Path | str = ".") -> str:
     """数据集版本指纹：测试集（+ fixed 池）内容的哈希。
-    预登记与 run 守卫共用同一算法（此前两处各算各的，对不上）。"""
-    parts = [file_md5(exp.testset)]
+    预登记与 run 守卫共用同一算法（此前两处各算各的，对不上）。
+    root：相对路径的解析基准（web 进程 CWD ≠ 项目根时显式传入）。"""
+    base = Path(root)
+    parts = [file_md5(base / exp.testset)]
     if exp.pool_strategy == "fixed" and exp.pool:
-        parts.append(file_md5(exp.pool))
+        parts.append(file_md5(base / exp.pool))
     return hashlib.sha256(":".join(parts).encode("utf-8")).hexdigest()[:12]
 
 

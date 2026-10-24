@@ -5,6 +5,7 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -475,6 +476,152 @@ class WebTest(unittest.TestCase):
         status, _ = self.post("/prompts/restore", {"domain": "conic", "file": bak.name})
         self.assertIn(status, (200, 303))
         self.assertEqual(original, tpl.read_text(encoding="utf-8"))
+
+
+class RoundFiveUiTest(unittest.TestCase):
+    """第五轮 UX：导航/守卫/时间/启动门槛/gold 复核队列。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._tmp.name)
+        cls.run_id = seed_root(cls.root)
+        cls.app = WebApp(cls.root)
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(cls.app))
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.base = f"http://127.0.0.1:{cls.server.server_port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls._tmp.cleanup()
+
+    def get(self, path: str) -> tuple[int, str]:
+        try:
+            with urllib.request.urlopen(self.base + path, timeout=10) as resp:
+                return resp.status, resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8")
+
+    def post(self, path: str, data: dict) -> tuple[int, str]:
+        payload = urllib.parse.urlencode(data).encode("utf-8")
+        req = urllib.request.Request(self.base + path, data=payload)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8")
+
+    def test_layout_nav_groups_and_active(self):
+        status, body = self.get("/runs")
+        self.assertEqual(200, status)
+        self.assertIn("aria-current", body)          # 无障碍：当前页标注
+        self.assertIn("active", body)
+        self.assertIn("＋ 启动实验", body)            # 主 CTA
+        self.assertIn("@media (max-width: 720px)", body)  # 移动端断点
+        self.assertIn("overflow-x: auto", body)      # 表格横向滚动
+
+    def test_guard_js_present(self):
+        _, body = self.get("/runs")
+        self.assertIn("data-confirm", body)          # 确认守卫已注入
+        self.assertIn("处理中", body)                # 防重复提交
+
+    def test_fmt_time_local_relative(self):
+        from kelab.web.ui import fmt_time
+
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        text = fmt_time(now)
+        self.assertIn("刚刚", text)
+        self.assertIn("（", text)  # 本地时间（相对）
+        self.assertEqual("—", fmt_time(None))
+        self.assertEqual("乱写的", fmt_time("乱写的"))  # 解析失败原样返回
+
+    def test_launch_gate_and_estimate(self):
+        status, body = self.get("/launch")
+        self.assertEqual(200, status)
+        self.assertIn("未预登记", body)              # mini 实验无登记 → 徽标
+        self.assertIn("data-needs-prereg", body)     # 启动按钮需勾选
+        self.assertIn("万 tokens", body)             # token 粗估
+        self.assertIn("data-confirm", body)          # 启动确认
+
+    def test_prereg_page_validity_status(self):
+        status, body = self.get("/prereg")
+        self.assertEqual(200, status)
+        self.assertIn("未登记", body)
+        # 登记后再看：有效（配置与数据都对上）
+        from kelab.prereg import create_prereg
+        from kelab.config import dataset_fingerprint, load_experiment
+
+        exp = load_experiment(self.root / "configs" / "experiments" / "mini.toml")
+        create_prereg(self.root, exp, dataset_md5=dataset_fingerprint(exp, root=self.root),
+                      delta=0.05, quality_gate=None, review_rate=0.1,
+                      scoring_protocol="人工盲评", actor="测试")
+        status, body = self.get("/prereg")
+        self.assertIn("有效", body)
+
+    def test_gold_review_queue_flow(self):
+        """gold 复核队列 Web 入口：打开 → 保存编辑 → 冻结。"""
+        # 造一个复核队列（用 conic 包校验：合法/非法各一）
+        from kelab import gold_pipeline
+        from kelab.adapters.base import Item
+        from kelab.packs import load_pack
+
+        pack = load_pack("conic", root=self.root)
+        queue_dir = self.root / "data" / "gold" / "q1"
+        items = [
+            Item("g1", "双曲线焦距题", "output = { focal_length(C) | C: Hyperbola };"),
+            Item("g2", "坏题", "不是 KE"),
+        ]
+        cands = gold_pipeline.validate_candidates(items, pack)
+        gold_pipeline.export_review(cands, queue_dir)
+
+        status, body = self.get("/annotate")
+        self.assertEqual(200, status)
+        self.assertIn("q1", body)                    # 队列出现在标注页
+        status, body = self.get("/annotate/review?dir=q1")
+        self.assertEqual(200, status)
+        self.assertIn("g1", body)
+        self.assertIn("goldke__g1", body)            # 可编辑 gold 文本框
+        self.assertIn("规则 ✗", body)                # g2 规则未过
+
+        # 保存：g1 pass；g2 改好再 pass
+        status, _ = self.post("/annotate/review_save", {
+            "dir": "q1", "page": "1",
+            "verdict__g1": "pass",
+            "goldke__g1": "output = { focal_length(C) | C: Hyperbola };",
+            "verdict__g2": "pass",
+            "goldke__g2": "output = { eccentricity(C) | C: Ellipse };",
+        })
+        self.assertIn(status, (200, 303))
+
+        # 冻结
+        status, _ = self.post("/annotate/review_freeze", {
+            "dir": "q1", "domain": "conic", "actor": "测试员",
+        })
+        self.assertIn(status, (200, 303))
+        frozen = queue_dir / "frozen.jsonl"
+        self.assertTrue(frozen.exists())
+        from kelab.datasets import read_jsonl
+        items = read_jsonl(frozen)
+        self.assertEqual(2, len(items))
+        self.assertIn("focal_length", items[0].gold_operators)
+
+    def test_freeze_requires_actor(self):
+        from kelab import gold_pipeline
+        from kelab.adapters.base import Item
+        from kelab.packs import load_pack
+
+        pack = load_pack("conic", root=self.root)
+        queue_dir = self.root / "data" / "gold" / "q2"
+        cands = gold_pipeline.validate_candidates(
+            [Item("g1", "题", "output = { focal_length(C) | C: Hyperbola };")], pack)
+        gold_pipeline.export_review(cands, queue_dir)
+        status, body = self.post("/annotate/review_freeze",
+                                 {"dir": "q2", "domain": "conic", "actor": ""})
+        self.assertIn(status, (200, 303))
+        self.assertFalse((queue_dir / "frozen.jsonl").exists())  # 缺复核人 → 拒绝
 
 
 if __name__ == "__main__":

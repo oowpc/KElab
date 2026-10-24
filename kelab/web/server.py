@@ -13,8 +13,10 @@ from .pages_configs import page_config_edit, page_configs, post_config_save
 from .pages_experiments import page_compare, page_domains, page_grid, page_launch
 from .pages_home import page_home
 from .pages_prepare import page_prepare, post_prepare
-from .pages_annotate import (page_annotate, page_annotate_draft, post_annotate_delete,
-                             post_annotate_recheck, post_annotate_save)
+from .pages_annotate import (page_annotate, page_annotate_draft, page_gold_review,
+                             post_annotate_delete, post_annotate_recheck,
+                             post_annotate_save, post_gold_review_freeze,
+                             post_gold_review_save)
 from .pages_prompts import (page_prompt_diff, page_prompt_edit, page_prompt_history,
                             page_prompt_preview, page_prompts, post_prompt_restore,
                             post_prompt_save)
@@ -95,6 +97,8 @@ def make_handler(app: WebApp):
                     return self._send(page_prepare(app, query))
                 if path == "/annotate":
                     return self._send(page_annotate(app, query, query.get("msg", [""])[0]))
+                if path == "/annotate/review":
+                    return self._send(page_gold_review(app, query, query.get("msg", [""])[0]))
                 if path == "/configs/edit":
                     return self._send(page_config_edit(app, query, query.get("msg", [""])[0]))
 
@@ -121,6 +125,8 @@ def make_handler(app: WebApp):
                                       "application/json; charset=utf-8")
                 if path.startswith("/files/results/"):
                     return self._send_file(path[len("/files/results/"):])
+                if path.startswith("/derived/"):
+                    return self._send_derived(path[len("/derived/"):])
                 self._send(b"<h1>404</h1>", status=404)
             except Exception as exc:  # 页面级兜底：返回错误页而不是断开
                 self._send(
@@ -204,6 +210,15 @@ def make_handler(app: WebApp):
                     msg = post_annotate_delete(app, form)
                     return self._redirect(
                         f"/annotate?domain={form['domain'][0]}&msg={urllib.parse.quote(msg)}")
+                if parsed.path == "/annotate/review_save":
+                    msg = post_gold_review_save(app, form)
+                    return self._redirect(
+                        f"/annotate/review?dir={form['dir'][0]}&page={form.get('page', ['1'])[0]}"
+                        f"&msg={urllib.parse.quote(msg)}")
+                if parsed.path == "/annotate/review_freeze":
+                    msg = post_gold_review_freeze(app, form)
+                    return self._redirect(
+                        f"/annotate/review?dir={form['dir'][0]}&msg={urllib.parse.quote(msg)}")
                 if parsed.path == "/launch_batch":
                     items = [(p, None) for p in form.get("exp", [])]
                     if not items:
@@ -300,6 +315,17 @@ def make_handler(app: WebApp):
                 return self._send(b"<h1>404</h1>", status=404)
             mime = {".png": "image/png", ".csv": "text/csv; charset=utf-8",
                     ".md": "text/markdown; charset=utf-8"}.get(target.suffix, "application/octet-stream")
+            self._send(target.read_bytes(), mime)
+
+        def _send_derived(self, rel: str) -> None:
+            """data/derived 下的只读产物（manifest/泄露报告等），穿越防护同 _send_file。"""
+            base = (app.root / "data" / "derived").resolve()
+            target = (base / rel).resolve()
+            if not str(target).startswith(str(base)) or not target.is_file():
+                return self._send(b"<h1>404</h1>", status=404)
+            mime = {".json": "application/json; charset=utf-8",
+                    ".jsonl": "text/plain; charset=utf-8",
+                    ".csv": "text/csv; charset=utf-8"}.get(target.suffix, "text/plain; charset=utf-8")
             self._send(target.read_bytes(), mime)
 
     return Handler

@@ -61,15 +61,19 @@ def _rebase_paths(domain: DomainConfig, pack_dir: Path) -> None:
 
 
 def load_pack(ref: str | Path, root: Path | str = ".") -> DomainPack:
-    """加载领域包：DomainConfig + prompt 模板 + 本体 + 数据适配器 + 任务适配器。"""
+    """加载领域包：DomainConfig + prompt 模板 + 本体 + 数据适配器 + 任务适配器。
+
+    root = 项目根。两种布局的相对路径都相对 root 解析（不依赖进程 CWD），
+    root="." 时路径字符串与旧行为逐字一致（config_hash 不变）。
+    """
     path = resolve_domain_path(ref, root)
     pack_dir: Path | None = None
     if path.is_dir():
         pack_dir = path
         path = path / "domain.toml"
     domain = load_domain(path)
-    if pack_dir is not None:
-        _rebase_paths(domain, pack_dir)
+    # 相对路径 rebase：目录包相对包目录，单文件布局相对项目根
+    _rebase_paths(domain, pack_dir if pack_dir is not None else Path(root))
     grammar_md5 = verify_grammar_md5(domain)
     try:
         template = Path(domain.prompt_template).read_text(encoding="utf-8")

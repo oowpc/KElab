@@ -89,6 +89,9 @@ def page_compare(app: WebApp, query: dict) -> bytes:
     run_a = query.get("a", [""])[0]
     run_b = query.get("b", [""])[0]
     retriever_q = query.get("retriever", [""])[0]
+    # 默认预选最近两个 run（两个下拉默认同一个 run 没有任何信息量）
+    if not run_a and not run_b and len(runs) >= 2:
+        run_a, run_b = runs[1]["run_id"], runs[0]["run_id"]
 
     options = "".join(
         f"<option value='{ESC(r['run_id'])}' {'selected' if r['run_id'] == run_a else ''}>"
@@ -109,7 +112,7 @@ def page_compare(app: WebApp, query: dict) -> bytes:
     if not (run_a and run_b) or run_a == run_b:
         if run_a == run_b and run_a:
             body.append("<div class='card'>a 和 b 是同一个 run，请选两个不同的。</div>")
-        return layout("跨 run 对比", "".join(body))
+        return layout("跨 run 对比", "".join(body), active="compare")
 
     try:
         store_a, store_b = app.open_run(run_a), app.open_run(run_b)
@@ -118,7 +121,7 @@ def page_compare(app: WebApp, query: dict) -> bytes:
     exp_a, exp_b = app.find_experiment(run_a), app.find_experiment(run_b)
     if exp_a is None or exp_b is None:
         body.append("<div class='card'>其中一个 run 找不到实验配置，无法聚合。</div>")
-        return layout("跨 run 对比", "".join(body))
+        return layout("跨 run 对比", "".join(body), active="compare")
     kind = exp_a.kind
     metrics_a = aggregate_run(store_a, run_a, exp_a)
     metrics_b = aggregate_run(store_b, run_b, exp_b)
@@ -199,7 +202,7 @@ def page_compare(app: WebApp, query: dict) -> bytes:
     )
     store_a.close()
     store_b.close()
-    return layout("跨 run 对比", "".join(body))
+    return layout("跨 run 对比", "".join(body), active="compare")
 
 # ---------------------------------------------------------------- 汇总对比（分领域小多图 + 跨 run 总览）
 
@@ -302,7 +305,7 @@ def page_domains(app: WebApp, query: dict) -> bytes:
             f"只有同测试集的 run 才可横向比（不同实验/对照 arms 请分别读）。"
             f"两两精细 Δ 请走 <a href='/compare'>跨 run 对比</a>。</span></div>"]
     if not selected:
-        return layout("汇总对比", "".join(body))
+        return layout("汇总对比", "".join(body), active="domains")
 
     panels: list[dict] = []
     knee_rows: list[tuple[str, str, str, float | None]] = []
@@ -353,7 +356,7 @@ def page_domains(app: WebApp, query: dict) -> bytes:
         store.close()
     if not panels:
         body.append("<div class='card'>勾选的 run 都找不到实验配置，无法汇总。</div>")
-        return layout("汇总对比", "".join(body))
+        return layout("汇总对比", "".join(body), active="domains")
 
     # ---- ① 总览汇总表（按最佳语义降序）
     def pct(v):
@@ -420,7 +423,7 @@ def page_domains(app: WebApp, query: dict) -> bytes:
         f"<div class='card'><table><tr><th>领域</th><th>检索器</th><th>实验</th><th>拐点</th></tr>"
         f"{rows_html}</table><span class='muted'>{ESC(note)}</span></div>"
     )
-    return layout("汇总对比", "".join(body))
+    return layout("汇总对比", "".join(body), active="domains")
 
 
 # ---------------------------------------------------------------- (k, N) 二维网格
@@ -447,13 +450,13 @@ def page_grid(app: WebApp, query: dict) -> bytes:
             f"<span class='muted'>单元格=语义等价率（3 重复均值），颜色越深越高；缺格=未测</span>"
             f"</form></div>"]
     if not (k_run_id and n_run_id):
-        return layout("(k, N) 网格", "".join(body))
+        return layout("(k, N) 网格", "".join(body), active="grid")
 
     store_k, store_n = app.open_run(k_run_id), app.open_run(n_run_id)
     exp_k, exp_n = app.find_experiment(k_run_id), app.find_experiment(n_run_id)
     if exp_k is None or exp_n is None:
         body.append("<div class='card'>找不到实验配置，无法聚合。</div>")
-        return layout("(k, N) 网格", "".join(body))
+        return layout("(k, N) 网格", "".join(body), active="grid")
     metrics = aggregate_run(store_k, k_run_id, exp_k) + aggregate_run(store_n, n_run_id, exp_n)
 
     retrievers = sorted({cm.retriever for cm in metrics})
@@ -502,9 +505,11 @@ def page_grid(app: WebApp, query: dict) -> bytes:
     )
     store_k.close()
     store_n.close()
-    return layout("(k, N) 网格", "".join(body))
+    return layout("(k, N) 网格", "".join(body), active="grid")
 
 def page_launch(app: WebApp, message: str = "") -> bytes:
+    from ..prereg import load_prereg
+
     exps = []
     if app.experiments_dir.is_dir():
         for toml in sorted(app.experiments_dir.glob("*.toml")):
@@ -513,27 +518,43 @@ def page_launch(app: WebApp, message: str = "") -> bytes:
                 exps.append((toml, exp))
             except ConfigError:
                 continue
+    # 历史均值校准 token 粗估（没有历史就用冒烟经验值：生成 ~2500 tok/条、judge ~900 tok/条）
+    avg_gen, avg_judge = _historical_token_means(app)
     rows = []
     for toml, exp in exps:
         grid = f"k={exp.ks}" if exp.kind == "k" else f"N={exp.ns} × k={exp.fixed_k}"
         n_conds, gens, judges = app.estimate_calls(exp)
-        estimate = (
-            f"{n_conds} 条件 → 约 {gens} 生成 + {judges} judge ≈ {gens + judges} 次调用"
-            if gens else "测试集缺失或为空，无法估算"
-        )
+        if gens:
+            tok_est = gens * avg_gen + judges * avg_judge
+            estimate = (f"{n_conds} 条件 → 约 {gens} 生成 + {judges} judge ≈ {gens + judges} 次调用"
+                        f"<br><span class='muted'>≈{tok_est / 1e4:.1f} 万 tokens（历史均值粗估）</span>")
+        else:
+            estimate = "测试集缺失或为空，无法估算"
+        reg = load_prereg(app.root, exp.name)
+        if reg:
+            reg_html = chip(f"已登记 v{reg['version']}", "ok")
+            gate = ""
+        else:
+            reg_html = chip("未预登记", "warn")
+            gate = ("<label style='font-size:12px'><input type='checkbox' name='prereg_ok'> "
+                    "未登记，按试跑口径启动</label>")
         rows.append(
             f"<tr><td><input type='checkbox' name='exp' form='batchform' "
-            f"value='{ESC(str(toml))}'></td>"
-            f"<td class='mono'>{ESC(exp.name)}</td><td>{ESC(exp.domain)}</td>"
+            f"value='{ESC(str(toml))}' aria-label='选择 {ESC(exp.name)}'></td>"
+            f"<td class='mono'>{ESC(exp.name)}<br>{reg_html}</td><td>{ESC(exp.domain)}</td>"
             f"<td>{exp.kind}</td><td>{ESC(grid)}</td>"
             f"<td>{ESC(', '.join(exp.retrievers))}</td><td class='num'>{exp.repeats}</td>"
-            f"<td class='muted'>{ESC(estimate)}</td>"
+            f"<td class='muted'>{estimate}</td>"
             f"<td><a href='/configs/edit?path={ESC(str(toml))}'>改参数</a></td>"
-            f"<td><form class='inline' method='post' action='/launch'>"
+            f"<td><form class='inline' method='post' action='/launch'"
+            f"{' data-needs-prereg' if not reg else ''}"
+            f" data-confirm='{ESC('确认启动 ' + exp.name + '？将按上方估算消耗 token。')}'>"
             f"<input type='hidden' name='exp' value='{ESC(str(toml))}'>"
-            f"<input type='text' name='limit' placeholder='全量' title='试跑题数（留空=全量）' "
-            f"style='width:56px'>"
-            f"<button>启动</button></form></td></tr>"
+            f"<label class='muted' style='font-size:12px'>试跑题数 "
+            f"<input type='text' name='limit' placeholder='全量' "
+            f"style='width:52px' aria-label='试跑题数（留空=全量）'></label>"
+            f"{gate}"
+            f"<button{' disabled' if not reg else ''}>启动</button></form></td></tr>"
         )
     if not rows:
         table_note = "<p class='muted'>configs/experiments/ 下没有实验配置。</p>"
@@ -550,8 +571,29 @@ def page_launch(app: WebApp, message: str = "") -> bytes:
 <p class='muted'>相同配置重复启动 = 断点续跑，已完成的 (条件,题,重复) 不会重跑，启动后自动跳转进度页。
 改参数走「改参数」表单（保存自动备份），prompt 模板在 <a href='/prompts'>Prompt</a> 页编辑。
 没有想要的实验？<a href='/configs/new?type=experiment'>新建实验配置 →</a>
-<b>启动会消耗 LLM token</b>，请先用 <a href='/prompts'>Prompt 预览</a> 和 CLI --dry-run 确认。</p>
-<form method='post' action='/launch_batch' id='batchform'>
+<b>启动会消耗 LLM token</b>，请先用 <a href='/prompts'>Prompt 预览</a> 和 CLI --dry-run 确认；
+主实验请先 <a href='/prereg'>预登记</a>（未登记的实验需勾选「试跑口径」才能启动）。</p>
+<form method='post' action='/launch_batch' id='batchform'
+ data-confirm='确认批量启动勾选实验？将串行依次消耗 token。'>
 <button>批量启动勾选实验（串行队列）</button>
 </form></div>"""
-    return layout("启动实验", body)
+    return layout("启动实验", body, active="launch")
+
+
+def _historical_token_means(app: WebApp) -> tuple[int, int]:
+    """从历史 run 取每条的平均 token（生成/judge），供启动页粗估；无历史用经验值。"""
+    for r in app.list_runs()[:5]:
+        try:
+            store = app.open_run(r["run_id"])
+            row = store._conn.execute(
+                "SELECT AVG(g.prompt_tokens + g.completion_tokens) g,"
+                " AVG(j.judge_prompt_tokens + j.judge_completion_tokens) j"
+                " FROM generations g JOIN judgments j ON j.gen_id=g.gen_id"
+                " WHERE g.run_id=? AND g.status='ok'", (r["run_id"],),
+            ).fetchone()
+            store.close()
+            if row and row["g"]:
+                return int(row["g"]), int(row["j"] or 900)
+        except Exception:
+            continue
+    return 2500, 900

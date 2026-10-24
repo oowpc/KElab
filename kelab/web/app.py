@@ -100,6 +100,38 @@ class WebApp:
             raise KeyError(run_id)
         return Store(db, readonly=True)
 
+    def review_queue_count(self, run_id: str) -> int:
+        """待人工抽检条数：应抽样本中尚无最终判定的数量（首页状态条用）。
+        抽样口径与 report.export_review_sample / 看板 review 队列一致：
+        每条件按 gen_id 排序等距抽取。"""
+        try:
+            store = self.open_run(run_id)
+        except KeyError:
+            return 0
+        try:
+            rate = 0.10
+            exp = self.find_experiment(run_id)
+            if exp is not None:
+                try:
+                    domain, _ = self._load_domain_resources(exp.domain)
+                    rate = domain.review_sample_rate
+                except Exception:
+                    pass
+            stride = max(1, round(1 / rate))
+            sampled: list[int] = []
+            for cond in store.condition_rows(run_id):
+                rows = [r["gen_id"] for r in
+                        store.generation_join_rows(run_id, cond["condition_id"])
+                        if r["status"] == "ok"]
+                rows.sort()
+                sampled.extend(rows[::stride] or rows[:1])
+            reviewed = self.get_reviews(run_id)  # 最终判定（C>一致>单人）
+            return sum(1 for gid in sampled if gid not in reviewed)
+        except Exception:
+            return 0
+        finally:
+            store.close()
+
     def _progress_counts(self, store: Store, run_id: str) -> dict:
         rows = store._conn.execute(
             "SELECT status, COUNT(*) c FROM generations WHERE run_id=? GROUP BY status",

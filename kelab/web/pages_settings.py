@@ -76,11 +76,12 @@ def page_settings(app: WebApp, message: str = "") -> bytes:
 <button>保存</button>
 <button formaction='/settings/test' formmethod='post' class='ghost'>测试连接（用上面填的值，零 token）</button>
 <button formaction='/settings/clear' formmethod='post' class='ghost'
+ onclick="return confirm('确定清除本地保存的 API 配置？（configs/api.json 将被删除）')"
  style='border-color:var(--crit);color:var(--crit)'>清除本地保存</button>
 </form></div>
 <div class='card'><b>可用模型</b>（配置页模型字段会从这里自动下拉）：
 {app.models_html()}</div>"""
-    return layout("API 设置", body)
+    return layout("API 设置", body, active="settings")
 
 
 def post_settings_save(app: WebApp, form: dict) -> str:

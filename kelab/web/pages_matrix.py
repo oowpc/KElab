@@ -66,7 +66,7 @@ def page_matrix(app: WebApp) -> bytes:
 <a href='/matrix.csv'>导出 CSV →</a></p>
 {"<div style='overflow-x:auto'><table><tr><th>run</th><th>领域</th><th>类型</th><th>模型</th><th>重复</th><th>种子</th><th>条件数</th><th>生成数</th><th>数据指纹</th><th>prompt md5</th><th>预登记</th><th>状态</th><th>开始时间</th></tr>" + trs + "</table></div>" if rows else "<p class='muted'>还没有运行记录。</p>"}
 </div>"""
-    return layout("实验矩阵", body)
+    return layout("实验矩阵", body, active="matrix")
 
 
 def matrix_csv(app: WebApp) -> bytes:

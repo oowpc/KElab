@@ -28,7 +28,8 @@ def page_configs(app: WebApp, message: str = "") -> bytes:
                   f"<p><a class='btn' href='/configs/new?type=experiment'>新建实验配置</a> "
                   f"<a class='btn ghost' href='/configs/new?type=domain'>新建领域配置</a></p>"
                   f"<div class='card'>{table}"
-                  "<p class='muted'>保存前自动备份到 archive/configs/，写出后回读校验（与 CLI 同一套 schema）。</p></div>")
+                  "<p class='muted'>保存前自动备份到 archive/configs/，写出后回读校验（与 CLI 同一套 schema）。</p></div>",
+                  active="configs")
 
 
 def _input(name: str, value, label: str, width: int = 40, hint: str = "",

@@ -8,8 +8,8 @@ from ..aggregate import aggregate_run
 from ..datasets import count_lines as _count_lines
 from ..store import Store
 from .app import WebApp
-from .ui import (ESC, PAGE_SIZE, POLL_JS, chip, eta_text, flag_chip, layout,
-                 progress_bar, verdict_chip, _fmt_pct)
+from .ui import (ESC, PAGE_SIZE, POLL_JS, chip, eta_text, flag_chip, fmt_time,
+                 layout, progress_bar, verdict_chip, _fmt_pct)
 
 def page_runs(app: WebApp) -> bytes:
     runs = app.list_runs()
@@ -22,42 +22,82 @@ def page_runs(app: WebApp) -> bytes:
     for r in runs:
         status = status_chips.get(r["status"], lambda: chip(r["status"]))()
         note = f"<br><span class='muted'>{ESC(r['note'])}</span>" if r.get("note") else ""
-        best = _best_semantic_quick(app, r["run_id"])
+        stats = _run_quick_stats(app, r["run_id"])
+        pilot = f" {chip('试跑', 'warn')}" if stats["n_items"] and stats["n_items"] < 50 else ""
+        # 反 cherry-pick：不报单点最佳，报主指标区间（首档→末档）与样本量
+        curve = "—"
+        if stats["first"] is not None and stats["last"] is not None:
+            curve = f"{_fmt_pct(stats['first'])} → {_fmt_pct(stats['last'])}"
+        exp_name = r["run_id"].rsplit("-", 1)[0]  # run_id = 实验名-哈希
         rows.append(
             f"<tr><td class='mono'><a href='/run/{ESC(r['run_id'])}'>{ESC(r['run_id'])}</a>{note}</td>"
-            f"<td>{ESC(r['started_at'])}</td><td>{status}</td>"
-            f"<td class='num'>{_fmt_pct(best) if best is not None else '—'}</td>"
+            f"<td>{ESC(exp_name)}</td>"
+            f"<td>{status}{pilot}</td>"
+            f"<td class='num'>{curve}</td>"
+            f"<td class='num'>{stats['n_items'] or '—'}</td>"
             f"<td>{progress_bar(r['ok'] + r['error'], r['expected'])}</td>"
-            f"<td class='num'>{r['ok']}</td><td class='num'>{r['error']}</td>"
+            f"<td class='num'>{r['error']}</td>"
+            f"<td>{fmt_time(r['started_at'])}</td>"
             f"<td><a href='/run/{ESC(r['run_id'])}/gens'>明细</a> · "
             f"<a href='/run/{ESC(r['run_id'])}/review'>抽检</a> · "
-            f"<a href='/run/{ESC(r['run_id'])}/log'>日志</a></td></tr>"
+            f"<a href='/compare?b={ESC(r['run_id'])}'>对比</a></td></tr>"
         )
-    table = ("<table><tr><th>run_id</th><th>开始时间</th><th>状态</th><th>最佳语义</th><th>进度</th>"
-             "<th>成功</th><th>失败</th><th></th></tr>" + "".join(rows) + "</table>") \
+    table = ("<table id='runtable'><tr><th>run_id</th><th>实验</th><th>状态</th>"
+             "<th>主指标区间</th><th>题数</th><th>进度</th>"
+             "<th>失败</th><th>开始时间</th><th></th></tr>" + "".join(rows) + "</table>") \
         if rows else "<p class='muted'>还没有运行记录。到 <a href='/launch'>启动实验</a> 跑一个。</p>"
     refresh = ("<script>setTimeout(() => location.reload(), 30000);</script>"
                if any(r["status"] == "running" for r in runs) else "")
-    return layout("运行列表", f"<h1>运行列表</h1><div class='card'>{table}</div>", refresh)
+    search = ""
+    if rows:
+        search = """
+<div class='filters' style='margin-bottom:10px'>
+<input type='text' id='runq' placeholder='搜索 run / 实验 / 备注…' style='width:280px'
+ aria-label='搜索运行'>
+</div>
+<script>
+document.getElementById('runq').addEventListener('input', function () {
+  const q = this.value.toLowerCase();
+  document.querySelectorAll('#runtable tr').forEach((tr, i) => {
+    if (i === 0) return;
+    tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+});
+</script>"""
+    return layout("运行列表", f"<h1>运行列表</h1><div class='card'>{search}{table}</div>",
+                  refresh, active="runs")
 
 
-def _best_semantic_quick(app: WebApp, run_id: str) -> float | None:
-    """运行列表用的轻量查询：各条件 llm_score 均值的最大值（不做全量聚合）。"""
+def _run_quick_stats(app: WebApp, run_id: str) -> dict:
+    """运行列表轻量查询：主指标首档→末档（按条件名排序）与评估题数。
+    不取最大值——单点最佳会鼓励 cherry-pick。"""
+    out = {"first": None, "last": None, "n_items": 0}
     try:
         store = app.open_run(run_id)
     except KeyError:
-        return None
+        return out
     try:
         rows = store._conn.execute(
-            "SELECT AVG(j.llm_score) m FROM generations g"
+            "SELECT g.condition_id, AVG(j.llm_score) m FROM generations g"
             " JOIN judgments j ON j.gen_id=g.gen_id"
             " WHERE g.run_id=? AND g.status='ok' AND j.llm_score IS NOT NULL"
             " GROUP BY g.condition_id", (run_id,),
         ).fetchall()
-        values = [r["m"] for r in rows if r["m"] is not None]
-        return max(values) if values else None
+        by_cond = {r["condition_id"]: r["m"] for r in rows if r["m"] is not None}
+        exp = app.find_experiment(run_id)
+        if exp is not None and by_cond:
+            # 按因子值排序（k 或 N），取首档/末档
+            from ..runner import expand_conditions
+            order = [c.condition_id for c in expand_conditions(exp, 0)]
+            series = [by_cond[c] for c in order if c in by_cond]
+            if not series:  # 条件名对不上（配置改过）→ 退化为排序字典序
+                series = [by_cond[c] for c in sorted(by_cond)]
+            if series:
+                out["first"], out["last"] = series[0], series[-1]
+        out["n_items"] = store.n_distinct_items(run_id)
+        return out
     except Exception:
-        return None
+        return out
     finally:
         store.close()
 
@@ -69,7 +109,27 @@ def page_run(app: WebApp, run_id: str, query: dict | None = None) -> bytes:
     info = store.run_info(run_id)
     exp = app.find_experiment(run_id)
     query = query or {}
-    body = [f"<h1>{ESC(run_id)}</h1>"]
+    # 面包屑 + 吸顶操作栏（9 个散落按钮收拢到这里 + 锚点直达）
+    crumbs = (f"<div class='crumbs'><a href='/runs'>运行列表</a> › "
+              f"<span class='mono'>{ESC(run_id)}</span></div>")
+    prev_link = ""
+    if exp is not None:
+        prev = [r["run_id"] for r in app.list_runs()
+                if r["run_id"].startswith(exp.name + "-") and r["run_id"] != run_id]
+        if prev:
+            prev_link = (f"<a href='/compare?a={ESC(prev[0])}&b={ESC(run_id)}'>"
+                         "对比上一次 →</a>")
+    actionbar = (
+        f"<div class='actionbar'>"
+        f"<a href='#overview'>概览</a><a href='#metrics'>指标</a>"
+        f"<a href='#charts'>图表</a>"
+        f"<a href='/run/{ESC(run_id)}/gens'>明细</a>"
+        f"<a href='/run/{ESC(run_id)}/failures'>失败</a>"
+        f"<a href='/run/{ESC(run_id)}/review'>抽检</a>"
+        f"<a href='/run/{ESC(run_id)}/log'>日志</a>"
+        f"{prev_link}</div>"
+    )
+    body = [crumbs, actionbar, f"<h1 class='mono' style='font-size:19px'>{ESC(run_id)}</h1>"]
 
     msg = query.get("msg", [""])[0]
     if msg:
@@ -100,16 +160,17 @@ def page_run(app: WebApp, run_id: str, query: dict | None = None) -> bytes:
     if info["status"] == "running" and run_id in app.launched \
             and app.launched[run_id].poll() is None:
         stop_form = (
-            f"<form class='inline' method='post' action='/stop' style='float:right'>"
+            f"<form class='inline' method='post' action='/stop' style='float:right'"
+            f" data-confirm='确定停止该 run？已完成的条目保留，之后可断点续跑。'>"
             f"<input type='hidden' name='run_id' value='{ESC(run_id)}'>"
             f"<button class='ghost' style='border-color:var(--crit);color:var(--crit)'>停止运行</button></form>"
         )
     body.append(
         f"<div class='card'>{stop_form}<b>总进度</b> <span id='overall-progress'>{overall}</span><br>"
-        f"<span class='muted'>开始 {ESC(info['started_at'])}　状态 {ESC(info['status'])}　"
-        f"模板 md5 {ESC(info['prompt_template_md5'] or '—')}　"
-        f"grammar md5 {ESC(info['grammar_md5'] or '—')}　"
-        f"数据指纹 {ESC(info['dataset_md5'] or '—' if 'dataset_md5' in info.keys() else '—')}"
+        f"<span class='muted'>开始 {ESC(fmt_time(info['started_at']))}　状态 {ESC(info['status'])}　"
+        f"模板 md5 <span class='mono hash'>{ESC(info['prompt_template_md5'] or '—')}</span>　"
+        f"grammar md5 <span class='mono hash'>{ESC(info['grammar_md5'] or '—')}</span>　"
+        f"数据指纹 <span class='mono hash'>{ESC(info['dataset_md5'] or '—' if 'dataset_md5' in info.keys() else '—')}</span>"
         f"</span></div>"
     )
 
@@ -140,7 +201,7 @@ def page_run(app: WebApp, run_id: str, query: dict | None = None) -> bytes:
                 parts.append("在领域配置 [pricing] 填单价可自动换算 ¥")
         body.append(f"<div class='card'><b>消耗</b>　{'　·　'.join(parts)}</div>")
 
-    # 解读卡：主指标大字 + 规则化人话判定（每条附依据）
+    # 解读卡：结论框架（主结论 + 样本量 + MDE + 可否下结论），不报单点最佳数
     if exp is not None:
         from ..aggregate import mde_estimate
         from ..interpret import interpret_run, review_agreement
@@ -155,15 +216,24 @@ def page_run(app: WebApp, run_id: str, query: dict | None = None) -> bytes:
         metrics_for_interp = aggregate_run(store, run_id, exp)
         findings = interpret_run(metrics_for_interp, exp, mde,
                                  review_agree=agree, review_total=total_reviewed)
-        best_semantic = None
-        for cm in metrics_for_interp:
-            stat = cm.stats.get("semantic")
-            if stat and stat.mean is not None and \
-                    (best_semantic is None or stat.mean > best_semantic):
-                best_semantic = stat.mean
-        hero = (f"<span style='font-size:28px;font-weight:650;color:var(--ink)'>"
-                f"{best_semantic * 100:.1f}%</span> "
-                f"<span class='muted'>最佳语义等价率</span>") if best_semantic is not None else ""
+        # 结论资格章：pilot（<50 题）一律「不做统计推断」；正规量须抽检校准过
+        if n_items < 50:
+            verdict_html = chip(f"试跑 pilot（{n_items} 题）", "warn") + \
+                " <span class='muted'>只做管线验证，不下统计结论</span>"
+        elif total_reviewed < 5:
+            verdict_html = chip("judge 未校准", "warn") + \
+                " <span class='muted'>先完成人工抽检再下结论</span>"
+        else:
+            verdict_html = chip("可下结论", "ok")
+        stat_text = f"n={n_items} 题 · MDE≈{mde * 100:.1f}pp（小于它的差异判「数据不足」）"
+        if total_reviewed:
+            stat_text += f" · judge 一致率 {agree * 100:.0f}%（{total_reviewed} 条）"
+        else:
+            stat_text += " · 尚无人工抽检"
+        head = (
+            f"<div style='display:flex;gap:10px;flex-wrap:wrap;align-items:center'>"
+            f"{verdict_html}<span class='muted'>{ESC(stat_text)}</span></div>"
+        )
         level_chip = {"good": ("✓", "ok"), "warn": ("⚠", "warn"),
                       "bad": ("✗", "err"), "info": ("ℹ", "")}
         items = "".join(
@@ -175,8 +245,8 @@ def page_run(app: WebApp, run_id: str, query: dict | None = None) -> bytes:
             for mark, kind in [level_chip[f.level]]
         )
         body.append(
-            f"<div class='card' style='border-left:3px solid var(--blue)'>"
-            f"<div>{hero}</div><ul style='margin:8px 0 0;padding-left:18px'>{items}</ul></div>"
+            f"<div class='card' id='overview' style='border-left:3px solid var(--blue)'>"
+            f"{head}<ul style='margin:8px 0 0;padding-left:18px'>{items}</ul></div>"
         )
 
     # 条件×指标表
@@ -202,7 +272,7 @@ def page_run(app: WebApp, run_id: str, query: dict | None = None) -> bytes:
                 f"<td class='num'>{cm.n_gen_error}</td><td class='num'>{cm.n_judge_error}</td></tr>"
             )
         body.append(
-            "<h2>条件 × 指标（3 次重复均值±std，%）</h2><div class='card'><table>"
+            "<h2 id='metrics'>条件 × 指标（3 次重复均值±std，%）</h2><div class='card'><table>"
             "<tr><th>条件</th><th>语义等价</th><th>完全匹配</th><th>语法解析</th><th>light检查</th>"
             "<th>检索覆盖</th><th>生成覆盖</th><th>tokens</th><th>ms</th>"
             "<th>生成失败</th><th>judge失败</th></tr>"
@@ -222,12 +292,13 @@ def page_run(app: WebApp, run_id: str, query: dict | None = None) -> bytes:
     if figs:
         imgs = "".join(
             f"<div><div class='muted'>{ESC(p.name)}</div>"
-            f"<img class='chart' src='/files/results/{run_id}/{ESC(p.name)}?v={version}'></div>"
+            f"<img class='chart' src='/files/results/{run_id}/{ESC(p.name)}?v={version}' "
+            f"alt='{ESC(p.stem)} 图表'></div>"
             for p in figs
         )
-        body.append(f"<h2>图表</h2><div class='card'>{imgs}</div>")
+        body.append(f"<h2 id='charts'>图表</h2><div class='card'>{imgs}</div>")
     elif chart_status == "rendering":
-        body.append("<h2>图表</h2><div class='card muted'>图表生成中，几秒后自动刷新…</div>")
+        body.append("<h2 id='charts'>图表</h2><div class='card muted'>图表生成中，几秒后自动刷新…</div>")
         auto_reload = "<script>setTimeout(() => location.reload(), 5000);</script>"
     elif chart_status == "failed":
         body.append(
@@ -258,7 +329,8 @@ def page_run(app: WebApp, run_id: str, query: dict | None = None) -> bytes:
     n_judge_errors = app.rejudge_count(run_id, "errors")
     n_all_ok = app.rejudge_count(run_id, "all")
     body.append(
-        f"<form class='inline' method='post' action='/rejudge'>"
+        f"<form class='inline' method='post' action='/rejudge'"
+        f" data-confirm='重判会消耗 LLM token（条数=调用数），确定继续？'>"
         f"<input type='hidden' name='run_id' value='{ESC(run_id)}'>"
         f"<button class='ghost'>重判 judge</button>"
         f"<select name='scope'>"
@@ -271,7 +343,8 @@ def page_run(app: WebApp, run_id: str, query: dict | None = None) -> bytes:
     n_gen_errors = sum(cm.n_gen_error for cm in metrics) if exp is not None else 0
     if n_gen_errors > 0:
         body.append(
-            f"<form class='inline' method='post' action='/retry_errors'>"
+            f"<form class='inline' method='post' action='/retry_errors'"
+            f" data-confirm='重试将删除 {n_gen_errors} 条失败记录并重新生成（花 token），继续？'>"
             f"<input type='hidden' name='run_id' value='{ESC(run_id)}'>"
             f"<button class='ghost'>重试失败（{n_gen_errors} 条）</button></form>"
             f"<span class='muted'>　删除失败记录后断点续跑——限流/网络抖动失败用它，"
@@ -280,7 +353,7 @@ def page_run(app: WebApp, run_id: str, query: dict | None = None) -> bytes:
     store.close()
 
     poll = POLL_JS % run_id if info["status"] == "running" else ""
-    return layout(run_id, "".join(body), poll + auto_reload)
+    return layout(run_id, "".join(body), poll + auto_reload, active="runs")
 
 
 def page_gens(app: WebApp, run_id: str, query: dict) -> bytes:
@@ -428,7 +501,7 @@ def page_gens(app: WebApp, run_id: str, query: dict) -> bytes:
             links.append(f"<b>{p}</b>" if p == page else f"<a href='{base}&page={p}'>{p}</a>")
         body.append("<div class='card'>" + " ".join(links) + "</div>")
     store.close()
-    return layout(f"{run_id} 明细", "".join(body))
+    return layout(f"{run_id} 明细", "".join(body), active="runs")
 
 
 # ---------------------------------------------------------------- 失败案例分类
@@ -534,7 +607,7 @@ def page_failures(app: WebApp, run_id: str) -> bytes:
             f"<th>rep</th><th>错误/理由</th></tr>{''.join(rows_html)}</table>{more}</div>"
         )
     body.append(f"<p><a href='/run/{ESC(run_id)}'>← 返回 run 详情</a></p>")
-    return layout(f"{run_id} 失败分类", "".join(body))
+    return layout(f"{run_id} 失败分类", "".join(body), active="runs")
 
 # ---------------------------------------------------------------- rejudge（judge 校准闭环）
 
@@ -731,4 +804,4 @@ def page_review(app: WebApp, run_id: str, query: dict) -> bytes:
         for r in rows
     )
     store.close()
-    return layout(f"{run_id} 抽检", "".join(body))
+    return layout(f"{run_id} 抽检", "".join(body), active="runs")

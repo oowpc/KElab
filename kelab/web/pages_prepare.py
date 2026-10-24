@@ -1,4 +1,9 @@
-"""数据准备页：xlsx 列映射、试导入预览、正式导入、测试集/池切分。"""
+"""数据准备页：数据源选择（xlsx/jsonl/Conic10K 记录目录）、列映射、试导入预览、
+正式导入、测试集/池切分、manifest 与泄露报告链接。
+
+与 CLI prepare 同一条数据路径：pack.adapter.load → 去重 → adapter.validate_gold
++ task 算子 → 切分 → 泄露检查 → manifest（跨分区题族 fail-fast）。
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,10 +20,11 @@ def _default_col_map() -> dict[str, str]:
 
 
 def _domain_col_map(app: WebApp, domain_name: str) -> dict[str, str]:
-    """领域 [xlsx] 节的列映射（无则内置默认）。"""
+    """领域 [xlsx] 节的列映射（无则内置默认；目录包读 domain.toml）。"""
     import tomllib
 
-    path = app.root / "configs" / "domains" / f"{domain_name}.toml"
+    base = app.root / "configs" / "domains" / domain_name
+    path = base / "domain.toml" if base.is_dir() else base.with_suffix(".toml")
     if path.exists():
         try:
             raw = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -31,20 +37,47 @@ def _domain_col_map(app: WebApp, domain_name: str) -> dict[str, str]:
     return _default_col_map()
 
 
+def _source_candidates(app: WebApp) -> list[str]:
+    """文件选择 datalist：根目录与 data/ 下的可用数据源（含 Conic10K 记录目录）。"""
+    found: list[str] = []
+    for pat in ("*.xlsx", "*.jsonl", "*.json"):
+        found += [p.name for p in app.root.glob(pat) if p.is_file()]
+    data = app.root / "data"
+    if data.is_dir():
+        for pat in ("**/*.xlsx", "**/*.jsonl", "**/*.json"):
+            for p in data.glob(pat):
+                if p.is_file() and not p.name.startswith("_"):
+                    found.append(str(p.relative_to(app.root)))
+        # Conic10K 审校记录目录（目录里全是 .json 记录）
+        for p in data.glob("**/"):
+            if p.is_dir() and any(p.glob("*.json")) and not any(
+                    p.glob("*.jsonl")):
+                found.append(str(p.relative_to(app.root)) + "/")
+    seen: list[str] = []
+    for f in found:
+        if f not in seen:
+            seen.append(f)
+    return seen[:60]
+
+
 def page_prepare(app: WebApp, query: dict) -> bytes:
-    domains_dir = app.root / "configs" / "domains"
-    options = ""
-    if domains_dir.is_dir():
-        for toml in sorted(domains_dir.glob("*.toml")):
-            options += f"<option>{ESC(toml.stem)}</option>"
+    from .pages_annotate import _domain_options
+
+    options = "".join(f"<option>{ESC(d)}</option>" for d in _domain_options(app))
+    datalist = "".join(f"<option value='{ESC(c)}'>" for c in _source_candidates(app))
     flash = f"<div class='flash'>{ESC(query['msg'][0])}</div>" if query.get("msg") else ""
-    body = f"""<h1>数据准备（xlsx → 测试集 + 候选池）</h1>{flash}
+    body = f"""<h1>数据准备（数据源 → 测试集 + 候选池）</h1>{flash}
 <div class='card'>
 <form method='post' action='/prepare'>
 <div style='margin:6px 0'><label>领域 <select name='domain'>{options}</select></label>
-<label style='margin-left:16px'>xlsx 路径 <input type='text' name='xlsx' style='width:40%' class='mono'
-  placeholder='如 data/题目KE标注.xlsx'></label></div>
-<div style='margin:6px 0' class='muted'>列映射（留空的字段用领域 [xlsx] 节或内置默认）：</div>
+<label style='margin-left:16px'>数据源 <input type='text' name='xlsx' list='srcfiles'
+  style='width:44%' class='mono' placeholder='xlsx / jsonl / Conic10K 记录目录' required
+  aria-label='数据源路径'></label></div>
+<datalist id='srcfiles'>{datalist}</datalist>
+<p class='muted' style='margin:2px 0 8px'>格式由领域适配器解释（conic：xlsx/jsonl；
+conic10k：train/dev/test.json、记录目录、jsonl）。新格式在 kelab/adapters/ 注册后在领域
+[pack] 节声明即可。</p>
+<div style='margin:6px 0' class='muted'>列映射（仅 xlsx 源；留空用领域 [xlsx] 节或内置默认）：</div>
 <div class='filters'>
 <label>item_id <input type='text' name='cm_item_id' placeholder='题目' style='width:90px'></label>
 <label>question <input type='text' name='cm_question' placeholder='题干' style='width:90px'></label>
@@ -64,25 +97,24 @@ def page_prepare(app: WebApp, query: dict) -> bytes:
 <button name='action' value='preview' class='ghost'>试导入预览（不写文件）</button>
 <button name='action' value='commit'>正式导入</button>
 </form></div>"""
-    return layout("数据准备", body)
+    return layout("数据准备", body, active="prepare")
 
 
 def post_prepare(app: WebApp, form: dict) -> bytes:
-    """试导入预览 / 正式导入。列映射/gold 校验/泄露检查的错误直接展示。"""
-    from .. import datasets
-    from ..config import load_domain
-    from ..ontology import load_ontology
+    """试导入预览 / 正式导入。适配器/gold 校验/泄露/跨族错误直接展示。"""
+    from .. import data_pipeline, datasets
+    from ..cli import _validate_and_attach
+    from ..packs import load_pack
 
     domain_name = form["domain"][0]
-    domain = load_domain(app.root / "configs" / "domains" / f"{domain_name}.toml")
     col_map = _default_col_map()
     for field in ("item_id", "question", "gold_ke", "source_id", "dataset", "note"):
         value = form.get(f"cm_{field}", [""])[0].strip()
         if value:
             col_map[field] = value
-    xlsx = Path(form["xlsx"][0])
-    if not xlsx.is_absolute():
-        xlsx = app.root / xlsx
+    source = Path(form["xlsx"][0])
+    if not source.is_absolute():
+        source = app.root / source
     split_text = form.get("split", [""])[0].strip()
     split = int(split_text) if split_text else None
     dev_text = form.get("dev", [""])[0].strip()
@@ -93,11 +125,17 @@ def post_prepare(app: WebApp, form: dict) -> bytes:
     body = [f"<h1>数据准备：{ESC(domain_name)}</h1>",
             "<p><a href='/prepare'>← 修改参数重新来</a></p>"]
     try:
-        items = datasets.import_xlsx(xlsx, col_map=col_map)
+        pack = load_pack(domain_name, root=app.root)
+    except Exception as exc:
+        body.append(f"<div class='card'>领域包加载失败：{ESC(str(exc))}</div>")
+        return layout("数据准备", "".join(body), active="prepare")
+    try:
+        items = pack.adapter.load(source, col_map=col_map)
     except Exception as exc:
         body.append(f"<div class='card'>导入失败：{ESC(str(exc))}"
-                    f"<br><span class='muted'>多半是列映射不对——试导入预览可以先看表头再调。</span></div>")
-        return layout("数据准备", "".join(body))
+                    f"<br><span class='muted'>多半是列映射不对（xlsx）或源格式与适配器不符——"
+                    f"试导入预览可以先看再调。</span></div>")
+        return layout("数据准备", "".join(body), active="prepare")
     items, dedupe = datasets.dedupe_items(items)
     if dedupe["dropped_question_dups"] or dedupe["same_ke_groups"]:
         body.append(
@@ -108,10 +146,10 @@ def post_prepare(app: WebApp, form: dict) -> bytes:
             f"（{ESC(str(dedupe['same_ke_groups'])[:200])}，建议人工复核）</div>"
         )
     if form.get("save_colmap") == ["on"]:
-        # 列映射存到领域配置 [xlsx] 节（下次该域自动生效）
         from .. import config_io
 
-        domain_toml = app.root / "configs" / "domains" / f"{domain_name}.toml"
+        base = app.root / "configs" / "domains" / domain_name
+        domain_toml = base / "domain.toml" if base.is_dir() else base.with_suffix(".toml")
         try:
             config_io.save_config_toml(
                 domain_toml, {"xlsx": col_map}, app.root / "archive" / "configs",
@@ -120,16 +158,10 @@ def post_prepare(app: WebApp, form: dict) -> bytes:
         except Exception as exc:
             body.append(f"<div class='card'>列映射保存失败（不影响导入）：{ESC(str(exc))}</div>")
 
-    # gold 校验（attach 失败=有非法 gold，列出并中止）
-    tpl = Path(domain.prompt_template)
-    if not tpl.is_absolute():
-        tpl = app.root / tpl
-    ontology = load_ontology(domain.ontology_source,
-                             prompt_text=tpl.read_text(encoding="utf-8"),
-                             json_path=domain.ontology_json)
+    # gold 校验（adapter.validate_gold + task 算子；失败=有非法 gold，列出并中止）
     gold_error = None
     try:
-        datasets.attach_gold_operators(items, domain.grammar_path, ontology)
+        _validate_and_attach(items, pack)
     except Exception as exc:
         gold_error = str(exc)
 
@@ -140,7 +172,7 @@ def post_prepare(app: WebApp, form: dict) -> bytes:
         for it in items[:3]
     )
     body.append(
-        f"<div class='card'><b>导入 {len(items)} 题</b>（列映射生效）"
+        f"<div class='card'><b>导入 {len(items)} 题</b>（适配器 {ESC(pack.adapter.name)}）"
         f"<table><tr><th>item_id</th><th>题干</th><th>gold KE</th><th>算子数</th></tr>"
         f"{sample}</table>"
         f"<span class='muted'>仅预览前 3 条，共 {len(items)} 条</span></div>"
@@ -148,9 +180,11 @@ def post_prepare(app: WebApp, form: dict) -> bytes:
     if gold_error:
         body.append(f"<div class='card'><b style='color:var(--crit)'>gold 校验失败</b>"
                     f"<pre class='mono'>{ESC(gold_error[:2000])}</pre>"
-                    f"<span class='muted'>gold 必须全部合法（实验口径）。修正数据或语法后再导入。</span></div>")
-        return layout("数据准备", "".join(body))
-    body.append("<div class='card'>gold KE 全部通过 lark 解析 + light 检查 ✓</div>")
+                    f"<span class='muted'>gold 必须全部合法（实验口径）。"
+                    f"待标注的候选（gold 为空）请走 <a href='/annotate'>gold 复核队列</a>。</span></div>")
+        return layout("数据准备", "".join(body), active="prepare")
+    body.append(f"<div class='card'>gold 全部通过适配器规则校验 ✓（grammar md5 "
+                f"<span class='mono'>{ESC(pack.grammar_md5)}</span>）</div>")
 
     if split:
         testset, dev, pool = datasets.split_dataset3(items, split, dev_size=dev_size,
@@ -158,28 +192,48 @@ def post_prepare(app: WebApp, form: dict) -> bytes:
     else:
         testset, dev, pool = items, [], None
 
+    partitions = {"testset": testset}
+    if pool is not None:
+        partitions["pool"] = pool
+    if dev:
+        partitions["dev"] = dev
+    manifest = data_pipeline.build_manifest(
+        partitions, seed=split_seed if split else None,
+        source=str(source), adapter=pack.adapter)
+    cross = manifest["cross_partition_families"]
+    if cross:
+        body.append(
+            f"<div class='card'><b style='color:var(--crit)'>跨分区题族 fail-fast</b>："
+            f"近重复题落在不同分区 {ESC(str(cross[:10]))}——协议口径这是泄露通道，已中止。"
+            f"<br><span class='muted'>调整切分/移除近重复后再导；确认无误可用 CLI "
+            f"--allow-cross-family 显式放行。</span></div>")
+        return layout("数据准备", "".join(body), active="prepare")
+
     if action == "preview":
         leak_note = ""
         if pool is not None:
             report = datasets.check_leakage(testset, pool, "fixed")
             leak_note = "✓ 零交集" if report["passed"] else f"✗ {len(report['hits'])} 处泄露"
             body.append(f"<div class='card'>切分预览：测试集 {len(testset)} 题 / 池 {len(pool)} 条"
-                        f"（seed {split_seed}），泄露检查 {leak_note}</div>")
+                        f"（seed {split_seed}），泄露检查 {leak_note}；"
+                        f"题族 {manifest['family_count']} 个，无跨分区族 ✓</div>")
         body.append("<div class='card'><b>这是预览，未写任何文件。</b>"
                     "确认无误后回上一页点「正式导入」。</div>")
-        return layout("数据准备", "".join(body))
+        return layout("数据准备", "".join(body), active="prepare")
 
-    # commit：写 testset.jsonl（+ pool.jsonl）+ 泄露报告
+    # commit：写 testset.jsonl（+ pool.jsonl）+ 泄露报告 + manifest
     out_dir = app.root / "data" / "derived"
     out_dir.mkdir(parents=True, exist_ok=True)
-    testset_path = out_dir / f"{xlsx.stem}.jsonl"
+    testset_path = out_dir / f"{source.stem}.jsonl"
     datasets.write_jsonl(testset, testset_path)
-    lines = [f"测试集 {len(testset)} 题 → <span class='mono'>{ESC(str(testset_path))}</span>"]
+    data_pipeline.write_manifest(manifest, out_dir / "_manifest.json")
+    lines = [f"测试集 {len(testset)} 题 → <span class='mono'>{ESC(str(testset_path))}</span>",
+             "<a href='/derived/_manifest.json'>manifest（分区指纹+题族）</a>"]
     if pool is not None:
-        pool_path = out_dir / f"{xlsx.stem}_pool.jsonl"
+        pool_path = out_dir / f"{source.stem}_pool.jsonl"
         datasets.write_jsonl(pool, pool_path)
         if dev:
-            dev_path = out_dir / f"{xlsx.stem}_dev.jsonl"
+            dev_path = out_dir / f"{source.stem}_dev.jsonl"
             datasets.write_jsonl(dev, dev_path)
             lines.append(f"开发集 {len(dev)} 题 → <span class='mono'>{ESC(str(dev_path))}</span>"
                          "（流程调试/判分校准用，不计主结果）")
@@ -188,8 +242,9 @@ def post_prepare(app: WebApp, form: dict) -> bytes:
         lines.append(f"候选池 {len(pool)} 条 → <span class='mono'>{ESC(str(pool_path))}</span>")
         lines.append(
             f"泄露检查：{'<b style=color:var(--good)>通过 ✓</b>' if report['passed'] else '<b style=color:var(--crit)>未通过 ✗（不得进入实验）</b>'}"
+            f"　<a href='/derived/_leakage_report.json'>泄露报告</a>"
         )
     body.append(f"<div class='card'>{'<br>'.join(lines)}</div>")
     body.append("<div class='card'>下一步：到「配置」把实验的 testset（和 pool）指向新文件，"
                 "然后到「启动实验」开跑。</div>")
-    return layout("数据准备", "".join(body))
+    return layout("数据准备", "".join(body), active="prepare")

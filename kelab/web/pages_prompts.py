@@ -47,7 +47,7 @@ def page_prompts(app: WebApp, message: str = "") -> bytes:
     table = ("<table><tr><th>领域</th><th>prompt 模板</th><th></th><th></th></tr>"
              + "".join(rows) + "</table>") if rows else "<p class='muted'>没有领域配置。</p>"
     flash = f"<div class='flash'>{ESC(message)}</div>" if message else ""
-    return layout("Prompt", f"<h1>Prompt 模板</h1>{flash}<div class='card'>{table}"
+    return layout("Prompt", f"<h1>Prompt 模板</h1>{flash}<div class='card'>{table}", active="prompts"
                   "<p class='muted'>编辑保存前自动校验结构（示例区/题目标记、本体可解析），"
                   "原版本自动备份到 archive/prompts/。模板 md5 每次运行落库，改版本不影响旧 run 的可追溯性。</p></div>")
 

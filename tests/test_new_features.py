@@ -231,7 +231,7 @@ class NewFeaturesTest(MockServerMixin, unittest.TestCase):
         status, body = self.post("/prepare", form)
         self.assertEqual(200, status)
         self.assertIn("导入 2 题", body)
-        self.assertIn("gold KE 全部通过", body)
+        self.assertIn("gold 全部通过适配器规则校验", body)
         self.assertIn("未写任何文件", body)
         self.assertFalse((self.root / "data" / "derived" / "annotated.jsonl").exists())
 
@@ -512,7 +512,10 @@ class NewFeaturesTest(MockServerMixin, unittest.TestCase):
     def test_run_page_interpretation_card(self):
         status, body = self.get(f"/run/{self.run_id}")
         self.assertEqual(200, status)
-        self.assertIn("最佳语义等价率", body)  # 主指标大字
+        # 反 cherry-pick：结论框架（资格章 + 样本量 + MDE），不报单点最佳数
+        self.assertIn("试跑 pilot", body)
+        self.assertIn("MDE", body)
+        self.assertNotIn("最佳语义等价率", body)
         self.assertIn("人工抽检不足 5 条", body)  # 种子无人工判定 → 校准提示
 
     def test_review_rate_from_domain_config(self):
