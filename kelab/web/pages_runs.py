@@ -14,6 +14,7 @@ from .ui import (ESC, PAGE_SIZE, POLL_JS, chip, eta_text, flag_chip, fmt_time,
 def page_runs(app: WebApp) -> bytes:
     runs = app.list_runs()
     rows = []
+    cards = []
     status_chips = {
         "running": lambda: chip("运行中", "warn"),
         "done": lambda: chip("完成", "ok"),
@@ -29,6 +30,7 @@ def page_runs(app: WebApp) -> bytes:
         if stats["first"] is not None and stats["last"] is not None:
             curve = f"{_fmt_pct(stats['first'])} → {_fmt_pct(stats['last'])}"
         exp_name = r["run_id"].rsplit("-", 1)[0]  # run_id = 实验名-哈希
+        short_id = exp_name + "-" + r["run_id"].rsplit("-", 1)[1][:4]  # 移动端短显示
         rows.append(
             f"<tr><td class='mono'><a href='/run/{ESC(r['run_id'])}'>{ESC(r['run_id'])}</a>{note}</td>"
             f"<td>{ESC(exp_name)}</td>"
@@ -42,10 +44,24 @@ def page_runs(app: WebApp) -> bytes:
             f"<a href='/run/{ESC(r['run_id'])}/review'>抽检</a> · "
             f"<a href='/compare?b={ESC(r['run_id'])}'>对比</a></td></tr>"
         )
-    table = ("<table id='runtable'><tr><th>run_id</th><th>实验</th><th>状态</th>"
+        # 移动端卡片（宽表格横滑会把操作挤出屏幕，卡片直达）
+        cards.append(
+            f"<div class='rcard'><a href='/run/{ESC(r['run_id'])}' class='mono'>"
+            f"{ESC(short_id)}</a> {status}{pilot}<br>"
+            f"<span class='muted'>{curve} · {stats['n_items'] or '—'} 题 · "
+            f"{fmt_time(r['started_at'])}</span>"
+            f"{note}"
+            f"<div class='ops'>{progress_bar(r['ok'] + r['error'], r['expected'])}</div>"
+            f"<div class='ops'><a href='/run/{ESC(r['run_id'])}'>概览</a>"
+            f"<a href='/run/{ESC(r['run_id'])}/gens'>明细</a>"
+            f"<a href='/run/{ESC(r['run_id'])}/review'>抽检</a>"
+            f"<a href='/compare?b={ESC(r['run_id'])}'>对比</a></div></div>"
+        )
+    table = ("<table class='rtable' id='runtable'><tr><th>run_id</th><th>实验</th><th>状态</th>"
              "<th>主指标区间</th><th>题数</th><th>进度</th>"
              "<th>失败</th><th>开始时间</th><th></th></tr>" + "".join(rows) + "</table>") \
         if rows else "<p class='muted'>还没有运行记录。到 <a href='/launch'>启动实验</a> 跑一个。</p>"
+    cards_html = f"<div class='rcards'>{''.join(cards)}</div>" if cards else ""
     refresh = ("<script>setTimeout(() => location.reload(), 30000);</script>"
                if any(r["status"] == "running" for r in runs) else "")
     search = ""
@@ -55,16 +71,19 @@ def page_runs(app: WebApp) -> bytes:
 <input type='text' id='runq' placeholder='搜索 run / 实验 / 备注…' style='width:280px'
  aria-label='搜索运行'>
 </div>
-<script>
+""" + """<script>
 document.getElementById('runq').addEventListener('input', function () {
   const q = this.value.toLowerCase();
   document.querySelectorAll('#runtable tr').forEach((tr, i) => {
     if (i === 0) return;
     tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
   });
+  document.querySelectorAll('.rcards .rcard').forEach(c => {
+    c.style.display = c.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
 });
 </script>"""
-    return layout("运行列表", f"<h1>运行列表</h1><div class='card'>{search}{table}</div>",
+    return layout("运行列表", f"<h1>运行列表</h1><div class='card'>{search}{table}</div>{cards_html}",
                   refresh, active="runs")
 
 

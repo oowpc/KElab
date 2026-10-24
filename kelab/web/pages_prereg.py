@@ -55,8 +55,12 @@ def page_prereg(app: WebApp, query: dict) -> bytes:
                 status += (f" <span class='mono muted'>v{reg['version']} {reg['prereg_hash']}</span> "
                            f"<span class='muted'>{ESC(reg['created_at'][:16])} · "
                            f"{ESC(reg['actor'])}</span>")
-                for w in warnings:
-                    status += f"<br><span class='muted' style='font-size:12px'>{ESC(w)}</span>"
+                if warnings:
+                    detail_lines = "".join(
+                        f"<span class='muted' style='font-size:12px'>{ESC(w)}</span><br>"
+                        for w in warnings)
+                    status += (f"<details><summary class='muted' style='font-size:12px'>"
+                               f"校验明细（{len(warnings)} 条）</summary>{detail_lines}</details>")
                 action = f"<a href='/prereg/edit?exp={ESC(exp.name)}'>改（留历史）</a>"
             rows.append(
                 f"<tr><td class='mono'>{ESC(exp.name)}</td>"

@@ -207,7 +207,7 @@ def page_compare(app: WebApp, query: dict) -> bytes:
             body.append(
                 f"<h2>叠加曲线（检索器：{tabs}）</h2>"
                 f"<div class='card'><img class='chart' src='/files/results/_compare/"
-                f"{ESC(png.name)}?v={int(time.time())}'></div>"
+                f"{ESC(png.name)}?v={int(time.time())}' alt='{ESC(run_a)} vs {ESC(run_b)} 叠加曲线'></div>"
             )
 
     # Δ 表
@@ -426,7 +426,7 @@ def page_domains(app: WebApp, query: dict) -> bytes:
     if chart_runs_overlay(list(overlay_groups.values()), overlay_png):
         body.append("<h2>② 同轴叠加（同类型同检索器）</h2>"
                     f"<div class='card'><img class='chart' src='/files/results/_domains/"
-                    f"{ESC(overlay_png.name)}?v={len(selected)}'></div>")
+                    f"{ESC(overlay_png.name)}?v={len(selected)}' alt='多 run 同轴叠加曲线'></div>")
 
     # ---- ③ 分域小多图
     png = app.results_dir / "_domains" / f"domains_{digest}.png"
@@ -434,7 +434,7 @@ def page_domains(app: WebApp, query: dict) -> bytes:
     if ok:
         body.append("<h2>③ 分域小多图</h2>"
                     f"<div class='card'><img class='chart' src='/files/results/_domains/"
-                    f"{ESC(png.name)}?v={len(panels)}'></div>")
+                    f"{ESC(png.name)}?v={len(panels)}' alt='分领域小多图'></div>")
 
     # ---- ④ 各域拐点表 + 跨域一致性（H3 视图）
     rows_html = "".join(
@@ -554,6 +554,7 @@ def page_launch(app: WebApp, message: str = "") -> bytes:
     avg_gen, avg_judge = _historical_token_means(app)
     any_gated = False
     rows = []
+    cards = []
     for toml, exp in exps:
         grid = f"k={exp.ks}" if exp.kind == "k" else f"N={exp.ns} × k={exp.fixed_k}"
         n_conds, gens, judges = app.estimate_calls(exp)
@@ -589,6 +590,22 @@ def page_launch(app: WebApp, message: str = "") -> bytes:
             f"{gate}"
             f"<button{' disabled' if invalid else ''}>启动</button></form></td></tr>"
         )
+        # 移动端卡片：启动按钮 + 试跑题数直接在手上，不用横滑
+        cards.append(
+            f"<div class='rcard'><b class='mono'>{ESC(exp.name)}</b> {reg_html}<br>"
+            f"<span class='muted'>{ESC(grid)} · {ESC(', '.join(exp.retrievers))} · "
+            f"重复 {exp.repeats}</span><br>"
+            f"<span class='muted' style='font-size:12.5px'>{estimate}</span>"
+            f"<div class='ops'><form class='inline' method='post' action='/launch'"
+            f"{' data-needs-prereg' if invalid else ''}"
+            f" data-confirm='{ESC('确认启动 ' + exp.name + '？')}'>"
+            f"<input type='hidden' name='exp' value='{ESC(str(toml))}'>"
+            f"<input type='text' name='limit' placeholder='全量' style='width:56px'"
+            f" aria-label='试跑题数（留空=全量）'>"
+            f"{gate}"
+            f"<button{' disabled' if invalid else ''}>启动</button> "
+            f"<a href='/configs/edit?path={ESC(str(toml))}'>改参数</a></form></div></div>"
+        )
     if not rows:
         table_note = "<p class='muted'>configs/experiments/ 下没有实验配置。</p>"
         rows = []
@@ -601,8 +618,9 @@ def page_launch(app: WebApp, message: str = "") -> bytes:
                   "含未登记/无效实验：按试跑口径（各 limit=5）</label><br>") if any_gated else ""
     body = f"""<h1>启动实验</h1>{flash}{queue_html}
 <div class='card'>{table_note}
-<table><tr><th></th><th>实验</th><th>领域</th><th>类型</th><th>网格</th>
+<table class='rtable'><tr><th></th><th>实验</th><th>领域</th><th>类型</th><th>网格</th>
 <th>检索器</th><th>重复</th><th>调用量估算</th><th></th><th></th></tr>{"".join(rows)}</table>
+<div class='rcards'>{''.join(cards)}</div>
 <p class='muted'>相同配置重复启动 = 断点续跑，已完成的 (条件,题,重复) 不会重跑，启动后自动跳转进度页。
 改参数走「改参数」表单（保存自动备份），prompt 模板在 <a href='/prompts'>Prompt</a> 页编辑。
 没有想要的实验？<a href='/configs/new?type=experiment'>新建实验配置 →</a>

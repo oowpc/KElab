@@ -136,9 +136,11 @@ def make_handler(app: WebApp):
 
         def do_POST(self):  # noqa: N802
             try:
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path == "/upload":
+                    return self._handle_upload()  # multipart：body 自己读，不走表单解析
                 length = int(self.headers.get("Content-Length", "0"))
                 form = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
-                parsed = urllib.parse.urlparse(self.path)
                 if parsed.path == "/review":
                     run_id = form["run_id"][0]
                     app.save_review(
@@ -335,6 +337,42 @@ def make_handler(app: WebApp):
                     ".jsonl": "text/plain; charset=utf-8",
                     ".csv": "text/csv; charset=utf-8"}.get(target.suffix, "text/plain; charset=utf-8")
             self._send(target.read_bytes(), mime)
+
+        def _handle_upload(self) -> None:
+            """数据源上传（stdlib 手写 multipart 解析；≤60MB；落 data/uploads/）。"""
+            import re
+
+            ctype = self.headers.get("Content-Type", "")
+            if "multipart/form-data" not in ctype or "boundary=" not in ctype:
+                return self._send("<h1>400</h1>需要 multipart/form-data".encode("utf-8"), status=400)
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 60 * 1024 * 1024:
+                return self._send("<h1>413</h1>空文件或超过 60MB 上限".encode("utf-8"), status=413)
+            body = self.rfile.read(length)
+            boundary = ctype.split("boundary=", 1)[1].strip().strip('"').encode()
+            filename = None
+            content = None
+            for part in body.split(b"--" + boundary):
+                if b"content-disposition" not in part.lower():
+                    continue
+                head, _, payload = part.partition(b"\r\n\r\n")
+                if not payload:
+                    continue
+                match = re.search(rb'filename="([^"]*)"', head)
+                if match and match.group(1):
+                    filename = match.group(1).decode("utf-8", "replace")
+                    content = payload.rstrip(b"\r\n")  # 去掉结尾 CRLF（boundary 前的）
+            if not filename or content is None:
+                return self._redirect("/prepare?msg=" + urllib.parse.quote("未收到文件"))
+            safe = re.sub(r"[^A-Za-z0-9_.\-一-鿿]", "_", Path(filename).name)
+            dest_dir = app.root / "data" / "uploads"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / safe
+            dest.write_bytes(content)
+            rel = dest.relative_to(app.root).as_posix()
+            return self._redirect(
+                "/prepare?picked=" + urllib.parse.quote(rel)
+                + "&msg=" + urllib.parse.quote(f"已上传 {safe}（{len(content) // 1024} KB），已填入数据源"))
 
     return Handler
 

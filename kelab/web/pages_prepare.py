@@ -38,26 +38,44 @@ def _domain_col_map(app: WebApp, domain_name: str) -> dict[str, str]:
 
 
 def _source_candidates(app: WebApp) -> list[str]:
-    """文件选择 datalist：根目录与 data/ 下的可用数据源（含 Conic10K 记录目录）。"""
+    """文件选择 datalist：项目内 + data/uploads + Desktop 里的可用数据源
+    （含 Conic10K train/dev/test.json 与记录目录）。"""
     found: list[str] = []
     for pat in ("*.xlsx", "*.jsonl", "*.json"):
         found += [p.name for p in app.root.glob(pat) if p.is_file()]
-    data = app.root / "data"
-    if data.is_dir():
-        for pat in ("**/*.xlsx", "**/*.jsonl", "**/*.json"):
-            for p in data.glob(pat):
-                if p.is_file() and not p.name.startswith("_"):
-                    found.append(str(p.relative_to(app.root)))
-        # Conic10K 审校记录目录（目录里全是 .json 记录）
-        for p in data.glob("**/"):
-            if p.is_dir() and any(p.glob("*.json")) and not any(
-                    p.glob("*.jsonl")):
-                found.append(str(p.relative_to(app.root)) + "/")
+    for base_name in ("data",):
+        data = app.root / base_name
+        if data.is_dir():
+            for pat in ("**/*.xlsx", "**/*.jsonl", "**/*.json"):
+                for p in data.glob(pat):
+                    if p.is_file() and not p.name.startswith("_"):
+                        found.append(str(p.relative_to(app.root)))
+            for p in data.glob("**/"):
+                if p.is_dir() and any(p.glob("*.json")) and not any(p.glob("*.jsonl")):
+                    found.append(str(p.relative_to(app.root)) + "/")
+    # 外部常见位置（Conic10K 官方 train/dev/test.json 常躺在 Downloads/Desktop 项目目录里）
+    import itertools
+
+    home = Path.home()
+    for base in (home / "Desktop", home / "Downloads"):
+        if not base.is_dir():
+            continue
+        try:
+            for p in itertools.islice(
+                    base.glob("*/*/train.json"), 5):  # 项目目录/数据目录/train.json
+                found.append(str(p))
+            for p in itertools.islice(base.glob("*/train.json"), 5):
+                found.append(str(p))
+            for p in itertools.islice(base.glob("**/*.xlsx"), 8):
+                if "ke" in p.name.lower() or "标注" in p.name or "conic" in p.name.lower():
+                    found.append(str(p))
+        except OSError:
+            continue
     seen: list[str] = []
     for f in found:
         if f not in seen:
             seen.append(f)
-    return seen[:60]
+    return seen[:80]
 
 
 def page_prepare(app: WebApp, query: dict) -> bytes:
@@ -68,13 +86,22 @@ def page_prepare(app: WebApp, query: dict) -> bytes:
     datalist = "".join(f"<option value='{ESC(c)}'>" for c in _source_candidates(app))
     # 列映射 placeholder 读当前默认领域的 [xlsx] 节（不再写死「李天音-KE」）
     cm = _domain_col_map(app, domains[0]) if domains else _default_col_map()
+    picked = query.get("picked", [""])[0]  # 上传后回填
     flash = f"<div class='flash'>{ESC(query['msg'][0])}</div>" if query.get("msg") else ""
     body = f"""<h1>数据准备（数据源 → 测试集 + 候选池）</h1>{flash}
 <div class='card'>
+<form method='post' action='/upload' enctype='multipart/form-data' style='margin-bottom:10px'>
+<label class='muted'>本地文件不在这台机器的项目目录？直接上传：
+<input type='file' name='file' required aria-label='上传数据源文件'
+ style='max-width:260px'></label>
+<button class='ghost'>上传</button>
+<span class='muted'>≤60MB，落 data/uploads/</span>
+</form>
 <form method='post' action='/prepare'>
 <div style='margin:6px 0'><label>领域 <select name='domain'>{options}</select></label>
 <label style='margin-left:16px'>数据源 <input type='text' name='xlsx' list='srcfiles' id='srcinput'
   style='width:44%' class='mono' placeholder='xlsx / jsonl / Conic10K 记录目录' required
+  value='{ESC(picked)}'
   aria-label='数据源路径'></label></div>
 <datalist id='srcfiles'>{datalist}</datalist>
 <p class='muted' style='margin:2px 0 8px'>格式由领域适配器解释（conic：xlsx/jsonl；
@@ -263,5 +290,8 @@ def post_prepare(app: WebApp, form: dict) -> bytes:
         )
     body.append(f"<div class='card'>{'<br>'.join(lines)}</div>")
     body.append("<div class='card'>下一步：到「配置」把实验的 testset（和 pool）指向新文件，"
-                "然后到「启动实验」开跑。</div>")
+                "然后到「启动实验」开跑。"
+                "<div class='cta-row' style='margin-bottom:0'>"
+                "<a class='btn ghost' href='/annotate'>去标注/复核 →</a>"
+                "<a class='btn' href='/launch'>去启动实验 →</a></div></div>")
     return layout("数据准备", "".join(body), active="prepare")

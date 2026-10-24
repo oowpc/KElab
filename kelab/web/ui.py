@@ -117,6 +117,7 @@ img.chart { max-width: 100%; border-radius: 14px; box-shadow: var(--shadow);
 .cta-row { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
 .cta-row .btn { padding: 10px 22px; font-size: 15px; }
 /* 移动端（手机 390px 视口实测撑破过） */
+.rcards { display: none; }  /* 移动端卡片列表：桌面隐藏 */
 @media (max-width: 720px) {
   main { padding: 14px 12px 60px; }
   h1 { font-size: 21px; }
@@ -130,7 +131,13 @@ img.chart { max-width: 100%; border-radius: 14px; box-shadow: var(--shadow);
   .grid2 { grid-template-columns: 1fr; }
   .card { padding: 14px 14px; border-radius: 14px; }
   .actionbar { top: 44px; }
-  table { font-size: 12.5px; }
+  /* 宽表格（启动/运行列表）移动端换成卡片流：关键操作不再藏在屏外 */
+  table.rtable { display: none; }
+  .rcards { display: flex; flex-direction: column; gap: 10px; }
+  .rcards .rcard { background: var(--surface); border-radius: 14px;
+    box-shadow: var(--shadow); padding: 12px 14px; }
+  .rcards .rcard .ops { margin-top: 8px; display: flex; gap: 10px;
+    flex-wrap: wrap; align-items: center; }
 }
 """
 

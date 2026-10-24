@@ -800,5 +800,98 @@ class RoundSixTest(unittest.TestCase):
             self.assertTrue(ids_a & ids_b)
 
 
+class RoundSevenTest(unittest.TestCase):
+    """第七轮：移动端卡片、上传、冻结领域默认链。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._tmp.name)
+        cls.run_id = seed_root(cls.root)
+        cls.app = WebApp(cls.root)
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(cls.app))
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.base = f"http://127.0.0.1:{cls.server.server_port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls._tmp.cleanup()
+
+    def get(self, path: str) -> tuple[int, str]:
+        try:
+            with urllib.request.urlopen(self.base + path, timeout=10) as resp:
+                return resp.status, resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8")
+
+    def test_runs_and_launch_have_mobile_cards(self):
+        _, runs = self.get("/runs")
+        self.assertIn("rcards", runs)
+        self.assertIn("rcard", runs)
+        _, launch = self.get("/launch")
+        self.assertIn("rcard", launch)
+        _, home = self.get("/")
+        self.assertIn("table.rtable", home)  # 移动端表格隐藏规则在全局 CSS
+
+    def test_prepare_upload_flow(self):
+        """multipart 上传 → 落 data/uploads → 重定向带回填路径。"""
+        boundary = "----kelabtest"
+        content = "题目内容\n".encode("utf-8")
+        body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="我的标注.xlsx"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode("utf-8") + content + f"\r\n--{boundary}--\r\n".encode("utf-8")
+        req = urllib.request.Request(
+            self.base + "/upload", data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                # 跟随重定向到 /prepare
+                resp.read()
+                self.assertEqual(200, resp.status)
+        except urllib.error.HTTPError as exc:
+            self.fail(f"upload 失败: {exc.code}")
+        uploaded = self.root / "data" / "uploads" / "我的标注.xlsx"
+        self.assertTrue(uploaded.exists())
+        self.assertEqual(content.strip(), uploaded.read_bytes())
+        # 回填：picked 参数预填数据源输入框（非 ASCII 要 quote）
+        status, body = self.get("/prepare?picked=" + urllib.parse.quote("data/uploads/我的标注.xlsx"))
+        self.assertIn("data/uploads/我的标注.xlsx", body)
+        self.assertIn("multipart/form-data", body)  # 上传表单在页
+
+    def test_freeze_domain_remembered(self):
+        """冻结后记住领域选择（data/gold/_last_domain），下个队列默认它。"""
+        from kelab import gold_pipeline
+        from kelab.adapters.base import Item
+        from kelab.packs import load_pack
+
+        pack = load_pack("conic", root=self.root)
+        queue_dir = self.root / "data" / "gold" / "q7"
+        cands = gold_pipeline.validate_candidates(
+            [Item("g1", "题", "output = { focal_length(C) | C: Hyperbola };")], pack)
+        gold_pipeline.export_review(cands, queue_dir)
+        # 人工 pass 后冻结
+        path = queue_dir / "_review.jsonl"
+        rows = gold_pipeline.load_review(path)
+        rows[0]["human_verdict"] = "pass"
+        path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+                        encoding="utf-8")
+        payload = urllib.parse.urlencode(
+            {"dir": "q7", "domain": "conic", "actor": "测试员"}).encode("utf-8")
+        try:
+            urllib.request.urlopen(
+                urllib.request.Request(self.base + "/annotate/review_freeze", data=payload),
+                timeout=10)
+        except urllib.error.HTTPError as exc:
+            self.fail(f"freeze 失败: {exc.code}")
+        last = self.root / "data" / "gold" / "_last_domain"
+        self.assertTrue(last.exists())
+        self.assertEqual("conic", last.read_text(encoding="utf-8").strip())
+
+
 if __name__ == "__main__":
     unittest.main()

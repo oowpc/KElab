@@ -206,11 +206,20 @@ def page_gold_review(app: WebApp, query: dict, message: str = "") -> bytes:
         if p != page else f"<b>{p}</b>"
         for p in range(1, pages + 1)
     )
-    # 冻结领域默认取队列 sidecar（创建队列时写入），不再硬默认 conic
+    # 冻结领域默认链：队列 sidecar → 队列名含领域名 → 上次冻结用的领域 → 第一个
+    domains = _domain_options(app)
     default_domain = gold_pipeline.queue_meta(queue_dir).get("domain") or ""
+    if not default_domain:
+        default_domain = next((d for d in domains if d in dir_name), "")
+    if not default_domain:
+        last = app.root / "data" / "gold" / "_last_domain"
+        if last.exists():
+            default_domain = last.read_text(encoding="utf-8").strip()
+    if default_domain not in domains:
+        default_domain = domains[0] if domains else ""
     options = "".join(
         f"<option value='{ESC(d)}' {'selected' if d == default_domain else ''}>{ESC(d)}</option>"
-        for d in _domain_options(app)
+        for d in domains
     )
     body = f"""<div class='crumbs'><a href='/annotate'>标注</a> › 复核队列</div>
 <h1 class='mono' style='font-size:19px'>{ESC(dir_name)}</h1>{flash}
@@ -279,6 +288,9 @@ def post_gold_review_freeze(app: WebApp, form: dict) -> str:
         )
     except datasets.DataError as exc:
         return f"冻结被拒绝：{exc}"
+    # 记住本次选择（下个队列的默认值）
+    last = app.root / "data" / "gold" / "_last_domain"
+    last.write_text(form["domain"][0], encoding="utf-8")
     return f"冻结完成 → {frozen}"
 
 
