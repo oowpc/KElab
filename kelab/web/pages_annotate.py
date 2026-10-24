@@ -71,9 +71,25 @@ def _review_counts(path: Path) -> tuple[int, int, int]:
 
 def _queue_section(app: WebApp) -> str:
     dirs = _review_dirs(app)
+    # 创建队列表单（源 + 抽样 N + seed → 候选导入 → 规则校验 → 复核队列）
+    from .pages_prepare import _source_candidates
+
+    domain_opts = "".join(f"<option>{ESC(d)}</option>" for d in _domain_options(app))
+    src_list = "".join(f"<option value='{ESC(c)}'>" for c in _source_candidates(app))
+    create_form = f"""<details class='card'><summary><b>＋ 创建复核队列</b>（从数据源抽样/全量生成，标注 Conic10K 扩题从这里开始）</summary>
+<form method='post' action='/annotate/review_create' class='filters' style='margin-top:10px'>
+<label>领域 <select name='domain'>{domain_opts}</select></label>
+<label>源 <input type='text' name='source' list='srcfiles2' required style='width:220px' class='mono'
+ placeholder='train.json / 记录目录 / xlsx'></label>
+<datalist id='srcfiles2'>{src_list}</datalist>
+<label>队列名 <input type='text' name='name' style='width:110px' placeholder='默认=源文件名'></label>
+<label>抽样 <input type='text' name='sample' placeholder='全量' style='width:60px'></label>
+<label>seed <input type='text' name='seed' value='42' style='width:56px'></label>
+<button>创建</button></form></details>"""
     if not dirs:
-        return ("<h2>gold 复核队列</h2><div class='card muted'>data/gold/ 下还没有复核队列。"
-                "用 CLI 生成：<code>python -m kelab.cli gold --domain &lt;领域&gt; "
+        return ("<h2>gold 复核队列</h2>" + create_form
+                + "<div class='card muted'>还没有复核队列——用上面表单创建一个，"
+                "或 CLI：<code>python -m kelab.cli gold --domain &lt;领域&gt; "
                 "--source &lt;候选文件&gt; --out-dir data/gold/&lt;名&gt;</code></div>")
     rows = []
     for d in dirs:
@@ -89,10 +105,43 @@ def _queue_section(app: WebApp) -> str:
             f"<td>{chip('已冻结', 'ok') if frozen else chip('复核中', 'warn')}</td>"
             f"<td><a href='/annotate/review?dir={ESC(d.name)}'>打开 →</a></td></tr>"
         )
-    return ("<h2>gold 复核队列（扩题主入口）</h2><div class='card'><table>"
+    return ("<h2>gold 复核队列（扩题主入口）</h2>" + create_form
+            + "<div class='card'><table>"
             "<tr><th>队列</th><th>总数</th><th>已复核</th><th>规则未过</th><th>状态</th><th></th></tr>"
             + "".join(rows) + "</table>"
             "<p class='muted'>规则未过的条目不能直接冻结——在队列里改 gold KE 文本再标 pass。</p></div>")
+
+
+def post_gold_review_create(app: WebApp, form: dict) -> str:
+    """从数据源创建复核队列（适配器导入 → 规则校验 → 抽样 → 导出）。"""
+    import random
+    import re
+
+    from ..packs import load_pack
+
+    domain = form["domain"][0]
+    source = form["source"][0].strip()
+    name = form.get("name", [""])[0].strip() or Path(source).stem
+    name = re.sub(r"[^A-Za-z0-9_\-一-鿿]", "_", name)  # 防目录穿越
+    if not name:
+        return "队列名为空"
+    try:
+        sample_n = int(form.get("sample", [""])[0] or 0)
+        seed = int(form.get("seed", ["42"])[0] or 42)
+    except ValueError:
+        return "抽样数/seed 必须是整数"
+    pack = load_pack(domain, root=app.root)
+    src = Path(source)
+    if not src.is_absolute():
+        src = app.root / src
+    items = pack.adapter.load(src)
+    if sample_n and 0 < sample_n < len(items):
+        items = random.Random(seed).sample(items, sample_n)
+    candidates = gold_pipeline.validate_candidates(items, pack)
+    out_dir = app.root / "data" / "gold" / name
+    gold_pipeline.export_review(candidates, out_dir, domain=pack.domain.name)
+    ok = sum(1 for c in candidates if c.auto_ok)
+    return f"队列 {name} 已创建：{len(items)} 条（规则校验通过 {ok} 条）"
 
 
 def page_gold_review(app: WebApp, query: dict, message: str = "") -> bytes:
@@ -125,14 +174,25 @@ def page_gold_review(app: WebApp, query: dict, message: str = "") -> bytes:
             errors = ("<div class='issue'>" + "<br>".join(ESC(e) for e in row["auto_errors"])
                       + "</div>")
         meta = row.get("item", {}).get("metadata", {}) if isinstance(row.get("item"), dict) else {}
-        meta_line = " ".join(f"{k}={v}" for k, v in meta.items()
-                             if k in ("answer", "split", "source_index") and v)
+        # 原始表达式/过程全摆出来——标注人判 gold 就靠这些
+        meta_parts = []
+        for key, label in (("answer", "答案"), ("fact_expressions", "事实表达式"),
+                           ("query_expressions", "问题表达式"),
+                           ("answer_expressions", "答案表达式"),
+                           ("split", "切分"), ("source_index", "序号")):
+            value = meta.get(key)
+            if value not in (None, "", [], {}):
+                meta_parts.append(f"<b>{label}</b> {ESC(str(value))}")
+        meta_html = "<br>".join(meta_parts)
+        if meta.get("process"):
+            meta_html += (f"<details><summary>解题过程</summary>"
+                          f"<span class='muted'>{ESC(str(meta['process']))}</span></details>")
         body_rows.append(
-            f"<tr><td class='mono'>{ESC(rid)}<br>{auto}"
-            + (f"<br><span class='muted' style='font-size:11px'>{ESC(meta_line)}</span>"
-               if meta_line else "")
-            + f"</td>"
-            f"<td style='min-width:220px'>{ESC(row['question'])}{errors}</td>"
+            f"<tr><td class='mono'>{ESC(rid)}<br>{auto}</td>"
+            f"<td style='min-width:220px'>{ESC(row['question'])}"
+            + (f"<div class='muted' style='font-size:11.5px;margin-top:4px'>{meta_html}</div>"
+               if meta_html else "")
+            + f"{errors}</td>"
             f"<td style='min-width:300px'><textarea name='goldke__{ESC(rid)}' class='mono' "
             f"style='width:100%;height:88px'>{ESC(row.get('gold_ke') or '')}</textarea></td>"
             f"<td>{verdict_select(rid, str(row.get('human_verdict') or ''))}"
@@ -146,8 +206,10 @@ def page_gold_review(app: WebApp, query: dict, message: str = "") -> bytes:
         if p != page else f"<b>{p}</b>"
         for p in range(1, pages + 1)
     )
+    # 冻结领域默认取队列 sidecar（创建队列时写入），不再硬默认 conic
+    default_domain = gold_pipeline.queue_meta(queue_dir).get("domain") or ""
     options = "".join(
-        f"<option value='{ESC(d)}' {'selected' if d == 'conic' else ''}>{ESC(d)}</option>"
+        f"<option value='{ESC(d)}' {'selected' if d == default_domain else ''}>{ESC(d)}</option>"
         for d in _domain_options(app)
     )
     body = f"""<div class='crumbs'><a href='/annotate'>标注</a> › 复核队列</div>

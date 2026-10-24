@@ -305,6 +305,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         runner.run_experiment(res, dry_run=True)
         return 0
     res, run_id = _build_resources(exp, domain_path, need_api=True)
+    if args.note:
+        res.store.set_note(run_id, args.note)  # 覆盖启动守卫等来源的说明
     stats = runner.run_experiment(res)
     res.store.close()
     print(f"run_id={run_id} 完成：{stats}", file=sys.stderr)
@@ -386,7 +388,7 @@ def cmd_gold(args: argparse.Namespace) -> int:
     col_map = _col_map_for(args)
     items = gold_pipeline.import_candidates(source, pack.adapter, col_map=col_map)
     candidates = gold_pipeline.validate_candidates(items, pack)
-    review_path = gold_pipeline.export_review(candidates, out_dir)
+    review_path = gold_pipeline.export_review(candidates, out_dir, domain=pack.domain.name)
     ok = sum(1 for c in candidates if c.auto_ok)
     bad = [c for c in candidates if not c.auto_ok]
     print(f"候选 {len(candidates)} 条：规则校验通过 {ok} 条、未过 {len(bad)} 条", file=sys.stderr)
@@ -464,8 +466,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("run", help="跑实验（断点续跑）")
     p.add_argument("--exp", required=True)
-    p.add_argument("--domain", help="默认 configs/domains/<exp.domain>.toml")
+    p.add_argument("--domain", help="默认 configs/domains/<exp.domain>.toml 或目录包")
     p.add_argument("--limit", type=int, help="试跑模式：只跑前 N 题")
+    p.add_argument("--note", help="写入 run 备注（如启动守卫的 override 说明）")
     p.add_argument("--dry-run", action="store_true", help="只打印调用量估算，不调 API")
     p.set_defaults(func=cmd_run)
 

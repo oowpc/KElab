@@ -21,6 +21,14 @@ def page_configs(app: WebApp, message: str = "") -> bytes:
                 f"<tr><td>{label}</td><td class='mono'>{ESC(toml.name)}</td>"
                 f"<td><a href='/configs/edit?path={ESC(str(toml))}'>编辑</a></td></tr>"
             )
+        if sub == "domains":
+            # 目录包（<name>/domain.toml）同样是领域配置
+            for pack_dir in sorted(p for p in dir_path.iterdir()
+                                   if p.is_dir() and (p / "domain.toml").exists()):
+                rows.append(
+                    f"<tr><td>{label}（目录包）</td><td class='mono'>{ESC(pack_dir.name)}/</td>"
+                    f"<td><a href='/configs/edit?path={ESC(str(pack_dir / 'domain.toml'))}'>编辑</a></td></tr>"
+                )
     table = ("<table><tr><th>类型</th><th>文件</th><th></th></tr>" + "".join(rows) + "</table>") \
         if rows else "<p class='muted'>没有配置文件。</p>"
     flash = f"<div class='flash'>{ESC(message)}</div>" if message else ""

@@ -84,14 +84,37 @@ def chart_compare_overlay(
     return True
 
 
+def _condition_ids(app: WebApp, run_id: str) -> set[str]:
+    try:
+        store = app.open_run(run_id)
+        ids = {c["condition_id"] for c in store.condition_rows(run_id)}
+        store.close()
+        return ids
+    except Exception:
+        return set()
+
+
+def _default_compare_pair(app: WebApp, runs: list[dict]) -> tuple[str, str]:
+    """默认选最近两个「已完成且条件有交集」的 run（比不了的一对只会误导）。"""
+    done = [r for r in runs if r["status"] == "done"][:8]
+    conds: dict[str, set[str]] = {}
+    for r in done:
+        conds[r["run_id"]] = _condition_ids(app, r["run_id"])
+    for i, rb in enumerate(done):
+        for ra in done[i + 1:]:
+            if conds[rb["run_id"]] & conds[ra["run_id"]]:
+                return ra["run_id"], rb["run_id"]
+    return ("", "")
+
+
 def page_compare(app: WebApp, query: dict) -> bytes:
     runs = app.list_runs()
     run_a = query.get("a", [""])[0]
     run_b = query.get("b", [""])[0]
     retriever_q = query.get("retriever", [""])[0]
-    # 默认预选最近两个 run（两个下拉默认同一个 run 没有任何信息量）
+    # 默认预选最近两个可比 run（完成 + 条件有交集；同 run/不可比没信息量）
     if not run_a and not run_b and len(runs) >= 2:
-        run_a, run_b = runs[1]["run_id"], runs[0]["run_id"]
+        run_a, run_b = _default_compare_pair(app, runs)
 
     options = "".join(
         f"<option value='{ESC(r['run_id'])}' {'selected' if r['run_id'] == run_a else ''}>"
@@ -127,7 +150,18 @@ def page_compare(app: WebApp, query: dict) -> bytes:
     metrics_b = aggregate_run(store_b, run_b, exp_b)
     by_a = {cm.condition_id: cm for cm in metrics_a}
     by_b = {cm.condition_id: cm for cm in metrics_b}
-    cond_ids = sorted(set(by_a) | set(by_b))
+    shared = set(by_a) & set(by_b)
+    if not shared:
+        # 无可比条件：空状态，不画图不画表（画了反而误导）
+        body.append(
+            "<div class='card'><b>这两个 run 没有可比的条件</b>（条件集合无交集）。<br>"
+            "<span class='muted'>通常是一个跑了 k 实验、一个跑了 N 实验，或检索器/模型维度不同。"
+            "换一对试试；同实验的两次 run 可比性最好。</span></div>"
+        )
+        store_a.close()
+        store_b.close()
+        return layout("跨 run 对比", "".join(body), active="compare")
+    cond_ids = sorted(shared)
 
     # 概要：主指标 semantic 的改善/恶化/持平
     improved = worsened = flat = 0
@@ -508,8 +542,6 @@ def page_grid(app: WebApp, query: dict) -> bytes:
     return layout("(k, N) 网格", "".join(body), active="grid")
 
 def page_launch(app: WebApp, message: str = "") -> bytes:
-    from ..prereg import load_prereg
-
     exps = []
     if app.experiments_dir.is_dir():
         for toml in sorted(app.experiments_dir.glob("*.toml")):
@@ -520,6 +552,7 @@ def page_launch(app: WebApp, message: str = "") -> bytes:
                 continue
     # 历史均值校准 token 粗估（没有历史就用冒烟经验值：生成 ~2500 tok/条、judge ~900 tok/条）
     avg_gen, avg_judge = _historical_token_means(app)
+    any_gated = False
     rows = []
     for toml, exp in exps:
         grid = f"k={exp.ks}" if exp.kind == "k" else f"N={exp.ns} × k={exp.fixed_k}"
@@ -530,14 +563,14 @@ def page_launch(app: WebApp, message: str = "") -> bytes:
                         f"<br><span class='muted'>≈{tok_est / 1e4:.1f} 万 tokens（历史均值粗估）</span>")
         else:
             estimate = "测试集缺失或为空，无法估算"
-        reg = load_prereg(app.root, exp.name)
-        if reg:
-            reg_html = chip(f"已登记 v{reg['version']}", "ok")
-            gate = ""
-        else:
-            reg_html = chip("未预登记", "warn")
+        label, kind, invalid = app.prereg_status(exp)
+        reg_html = chip(label, kind)
+        if invalid:
+            any_gated = True
             gate = ("<label style='font-size:12px'><input type='checkbox' name='prereg_ok'> "
-                    "未登记，按试跑口径启动</label>")
+                    "未登记/无效，按试跑口径（≤5 题）</label>")
+        else:
+            gate = ""
         rows.append(
             f"<tr><td><input type='checkbox' name='exp' form='batchform' "
             f"value='{ESC(str(toml))}' aria-label='选择 {ESC(exp.name)}'></td>"
@@ -547,14 +580,14 @@ def page_launch(app: WebApp, message: str = "") -> bytes:
             f"<td class='muted'>{estimate}</td>"
             f"<td><a href='/configs/edit?path={ESC(str(toml))}'>改参数</a></td>"
             f"<td><form class='inline' method='post' action='/launch'"
-            f"{' data-needs-prereg' if not reg else ''}"
+            f"{' data-needs-prereg' if invalid else ''}"
             f" data-confirm='{ESC('确认启动 ' + exp.name + '？将按上方估算消耗 token。')}'>"
             f"<input type='hidden' name='exp' value='{ESC(str(toml))}'>"
             f"<label class='muted' style='font-size:12px'>试跑题数 "
             f"<input type='text' name='limit' placeholder='全量' "
             f"style='width:52px' aria-label='试跑题数（留空=全量）'></label>"
             f"{gate}"
-            f"<button{' disabled' if not reg else ''}>启动</button></form></td></tr>"
+            f"<button{' disabled' if invalid else ''}>启动</button></form></td></tr>"
         )
     if not rows:
         table_note = "<p class='muted'>configs/experiments/ 下没有实验配置。</p>"
@@ -564,6 +597,8 @@ def page_launch(app: WebApp, message: str = "") -> bytes:
     flash = f"<div class='flash'>{ESC(message)}</div>" if message else ""
     queue_note = app.queue_status()
     queue_html = f"<div class='flash'>{ESC(queue_note)}</div>" if queue_note else ""
+    batch_gate = ("<label style='font-size:13px'><input type='checkbox' name='prereg_ok'> "
+                  "含未登记/无效实验：按试跑口径（各 limit=5）</label><br>") if any_gated else ""
     body = f"""<h1>启动实验</h1>{flash}{queue_html}
 <div class='card'>{table_note}
 <table><tr><th></th><th>实验</th><th>领域</th><th>类型</th><th>网格</th>
@@ -572,10 +607,10 @@ def page_launch(app: WebApp, message: str = "") -> bytes:
 改参数走「改参数」表单（保存自动备份），prompt 模板在 <a href='/prompts'>Prompt</a> 页编辑。
 没有想要的实验？<a href='/configs/new?type=experiment'>新建实验配置 →</a>
 <b>启动会消耗 LLM token</b>，请先用 <a href='/prompts'>Prompt 预览</a> 和 CLI --dry-run 确认；
-主实验请先 <a href='/prereg'>预登记</a>（未登记的实验需勾选「试跑口径」才能启动）。</p>
+主实验请先 <a href='/prereg'>预登记</a>（未登记/配置漂移的实验须勾选「试跑口径」，服务端强制 limit≤5）。</p>
 <form method='post' action='/launch_batch' id='batchform'
  data-confirm='确认批量启动勾选实验？将串行依次消耗 token。'>
-<button>批量启动勾选实验（串行队列）</button>
+{batch_gate}<button>批量启动勾选实验（串行队列）</button>
 </form></div>"""
     return layout("启动实验", body, active="launch")
 

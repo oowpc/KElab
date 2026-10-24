@@ -26,7 +26,11 @@ def page_prompts(app: WebApp, message: str = "") -> bytes:
     rows = []
     domains_dir = app.root / "configs" / "domains"
     if domains_dir.is_dir():
-        for toml in sorted(domains_dir.glob("*.toml")):
+        # 单文件 .toml + 目录包（<name>/domain.toml）统一列出
+        entries = sorted(domains_dir.glob("*.toml"))
+        entries += sorted(p / "domain.toml" for p in domains_dir.iterdir()
+                          if p.is_dir() and (p / "domain.toml").exists())
+        for toml in entries:
             try:
                 from ..config import load_domain
                 domain = load_domain(toml)
@@ -34,7 +38,7 @@ def page_prompts(app: WebApp, message: str = "") -> bytes:
                 continue
             tpl = Path(domain.prompt_template)
             if not tpl.is_absolute():
-                tpl = app.root / tpl
+                tpl = (toml.parent / tpl) if toml.parent.name == domain.name else app.root / tpl
             exists = tpl.exists()
             rows.append(
                 f"<tr><td>{ESC(domain.name)}</td>"
@@ -47,18 +51,15 @@ def page_prompts(app: WebApp, message: str = "") -> bytes:
     table = ("<table><tr><th>领域</th><th>prompt 模板</th><th></th><th></th></tr>"
              + "".join(rows) + "</table>") if rows else "<p class='muted'>没有领域配置。</p>"
     flash = f"<div class='flash'>{ESC(message)}</div>" if message else ""
-    return layout("Prompt", f"<h1>Prompt 模板</h1>{flash}<div class='card'>{table}", active="prompts"
+    return layout("Prompt", f"<h1>Prompt 模板</h1>{flash}<div class='card'>{table}"
                   "<p class='muted'>编辑保存前自动校验结构（示例区/题目标记、本体可解析），"
-                  "原版本自动备份到 archive/prompts/。模板 md5 每次运行落库，改版本不影响旧 run 的可追溯性。</p></div>")
+                  "原版本自动备份到 archive/prompts/。模板 md5 每次运行落库，改版本不影响旧 run 的可追溯性。</p></div>",
+                  active="prompts")
 
 
 def _load_domain_by_name(app: WebApp, name: str):
-    from ..config import load_domain
-
-    path = app.root / "configs" / "domains" / f"{name}.toml"
-    if not path.exists():
-        raise KeyError(name)
-    return load_domain(path), path
+    """目录包/单文件统一（经 packs；路径已按布局解析）。"""
+    return app._load_domain_resources(name)
 
 
 def page_prompt_edit(app: WebApp, query: dict, message: str = "") -> bytes:

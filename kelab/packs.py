@@ -60,11 +60,11 @@ def _rebase_paths(domain: DomainConfig, pack_dir: Path) -> None:
     domain.ontology_json = rebased(domain.ontology_json)
 
 
-def load_pack(ref: str | Path, root: Path | str = ".") -> DomainPack:
-    """加载领域包：DomainConfig + prompt 模板 + 本体 + 数据适配器 + 任务适配器。
+def load_domain_config(ref: str | Path, root: Path | str = ".") -> tuple[DomainConfig, Path | None]:
+    """只加载 DomainConfig（不读 grammar/prompt 内容）——算 config_hash 用。
 
-    root = 项目根。两种布局的相对路径都相对 root 解析（不依赖进程 CWD），
-    root="." 时路径字符串与旧行为逐字一致（config_hash 不变）。
+    与 load_pack 的路径 rebase 完全一致：同一 (ref, root) 下两者产出的
+    DomainConfig 相同（web 启动页预测 run_id 与 CLI 子进程一致的保证）。
     """
     path = resolve_domain_path(ref, root)
     pack_dir: Path | None = None
@@ -72,8 +72,17 @@ def load_pack(ref: str | Path, root: Path | str = ".") -> DomainPack:
         pack_dir = path
         path = path / "domain.toml"
     domain = load_domain(path)
-    # 相对路径 rebase：目录包相对包目录，单文件布局相对项目根
     _rebase_paths(domain, pack_dir if pack_dir is not None else Path(root))
+    return domain, pack_dir
+
+
+def load_pack(ref: str | Path, root: Path | str = ".") -> DomainPack:
+    """加载领域包：DomainConfig + prompt 模板 + 本体 + 数据适配器 + 任务适配器。
+
+    root = 项目根。两种布局的相对路径都相对 root 解析（不依赖进程 CWD），
+    root="." 时路径字符串与旧行为逐字一致（config_hash 不变）。
+    """
+    domain, pack_dir = load_domain_config(ref, root)
     grammar_md5 = verify_grammar_md5(domain)
     try:
         template = Path(domain.prompt_template).read_text(encoding="utf-8")

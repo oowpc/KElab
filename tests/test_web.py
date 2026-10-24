@@ -541,7 +541,7 @@ class RoundFiveUiTest(unittest.TestCase):
     def test_launch_gate_and_estimate(self):
         status, body = self.get("/launch")
         self.assertEqual(200, status)
-        self.assertIn("未预登记", body)              # mini 实验无登记 → 徽标
+        self.assertIn("未登记", body)                # mini 实验无登记 → 徽标
         self.assertIn("data-needs-prereg", body)     # 启动按钮需勾选
         self.assertIn("万 tokens", body)             # token 粗估
         self.assertIn("data-confirm", body)          # 启动确认
@@ -622,6 +622,182 @@ class RoundFiveUiTest(unittest.TestCase):
                                  {"dir": "q2", "domain": "conic", "actor": ""})
         self.assertIn(status, (200, 303))
         self.assertFalse((queue_dir / "frozen.jsonl").exists())  # 缺复核人 → 拒绝
+
+
+class RoundSixTest(unittest.TestCase):
+    """第六轮：服务端启动守卫、目录包支持、compare 可比性。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._tmp.name)
+        cls.run_id = seed_root(cls.root)
+        cls.app = WebApp(cls.root)
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(cls.app))
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.base = f"http://127.0.0.1:{cls.server.server_port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls._tmp.cleanup()
+
+    def get(self, path: str) -> tuple[int, str]:
+        try:
+            with urllib.request.urlopen(self.base + path, timeout=10) as resp:
+                return resp.status, resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8")
+
+    def post(self, path: str, data: dict) -> tuple[int, str]:
+        payload = urllib.parse.urlencode(data).encode("utf-8")
+        req = urllib.request.Request(self.base + path, data=payload)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8")
+
+    # ---- 启动守卫（服务端兜底） ----
+
+    def test_gate_refuses_unregistered_without_override(self):
+        from kelab.config import load_experiment
+
+        exp = load_experiment(self.root / "configs" / "experiments" / "mini.toml")
+        limit, msg = self.app.launch_gate(exp, None, prereg_ok=False)
+        self.assertIsNone(limit)
+        self.assertIn("未预登记", msg)
+
+    def test_gate_forces_limit5_with_override(self):
+        from kelab.config import load_experiment
+
+        exp = load_experiment(self.root / "configs" / "experiments" / "mini.toml")
+        limit, msg = self.app.launch_gate(exp, None, prereg_ok=True)
+        self.assertEqual(5, limit)          # 留空全量也被强制压到 5
+        self.assertIn("试跑口径", msg)
+        limit2, _ = self.app.launch_gate(exp, 3, prereg_ok=True)
+        self.assertEqual(3, limit2)         # 更小的 limit 不动
+
+    def test_launch_writes_note_and_limit_via_cli_args(self):
+        """override 启动：子进程命令带 --limit 5 --note（不真启动，mock Popen）。"""
+        from unittest.mock import patch
+
+        with patch("kelab.web.app.subprocess.Popen") as popen:
+            popen.return_value.poll.return_value = None
+            run_id, msg = self.app.launch(
+                str(self.root / "configs" / "experiments" / "mini.toml"),
+                limit=None, prereg_ok=True)
+        self.assertIsNotNone(run_id)
+        cmd = popen.call_args[0][0]
+        self.assertIn("--limit", cmd)
+        self.assertIn("5", cmd)
+        self.assertIn("--note", cmd)
+        self.assertIn("未预登记", msg)
+        # mock 的 call_args 扣着日志句柄（stdout=log）——显式释放，Windows 才能清理临时目录
+        popen.call_args[1]["stdout"].close()
+        self.app.launched.clear()
+
+    def test_gate_passes_when_prereg_valid(self):
+        from kelab.config import dataset_fingerprint, load_experiment
+        from kelab.prereg import create_prereg
+
+        # 用独立实验名（mini 留给未登记用例；本类共享 fixture，不能互相污染）
+        mini2 = self.root / "configs" / "experiments" / "mini2.toml"
+        mini2.write_text(
+            (self.root / "configs" / "experiments" / "mini.toml").read_text(encoding="utf-8")
+            .replace('name = "mini"', 'name = "mini2"'), encoding="utf-8")
+        exp = load_experiment(mini2)
+        create_prereg(self.root, exp, dataset_md5=dataset_fingerprint(exp, root=self.root),
+                      delta=0.05, quality_gate=None, review_rate=0.1,
+                      scoring_protocol="人工盲评", actor="测试")
+        limit, msg = self.app.launch_gate(exp, None, prereg_ok=False)
+        self.assertIsNone(limit)            # 有效登记：不限 limit、无覆盖消息
+        self.assertIsNone(msg)
+
+    # ---- 目录包支持 ----
+
+    def _make_dir_pack(self) -> Path:
+        from tests.helpers import load_conic
+
+        grammar = Path(load_conic()[0].grammar_path).resolve().as_posix()
+        pack_dir = self.root / "configs" / "domains" / "pkd"
+        pack_dir.mkdir(parents=True, exist_ok=True)
+        (pack_dir / "prompt.md").write_text(
+            "# 角色\n\n**concepts**\n\n```\nCurve, Hyperbola\n```\n\n"
+            "**operators**\n\n```\nop focal_length(c: Curve) -> Number\n```\n\n"
+            "## 示例\n\n## 待转换题目\n\n输入：{{题目}}\n\n输出：\n", encoding="utf-8")
+        (pack_dir / "domain.toml").write_text(
+            "[domain]\nname = \"pkd\"\n"
+            f'grammar = "{grammar}"\n'
+            'prompt_template = "prompt.md"\n'
+            'ontology_source = "prompt"\n'
+            "[pack]\nadapter = \"conic\"\ntask = \"nl2ke\"\n",
+            encoding="utf-8")
+        return pack_dir
+
+    def test_dir_pack_recognized_everywhere(self):
+        """目录包：资源加载 + Prompt 页列出 + 配置页列出 + 模板读取。"""
+        pack_dir = self._make_dir_pack()
+        domain, path = self.app._load_domain_resources("pkd")
+        self.assertEqual("pkd", domain.name)
+        self.assertEqual(pack_dir / "prompt.md", domain.prompt_template)  # 相对包目录解析
+        template = self.app._read_template(domain)
+        self.assertIn("## 示例", template)
+        status, body = self.get("/prompts")
+        self.assertIn("pkd", body)
+        status, body = self.get("/configs")
+        self.assertIn("pkd", body)
+
+    def test_dir_pack_run_id_matches_cli(self):
+        """目录包 run_id 与 CLI 一致：两者都走 load_domain_config(ref, root='.')
+        （CLI 子进程 cwd=项目根）。这里验证同 root 重复加载哈希恒定 +
+        web 预测路径用的正是同一函数。"""
+        from kelab.config import config_hash, load_experiment
+        from kelab.packs import load_domain_config
+
+        self._make_dir_pack()
+        exp_toml = self.root / "configs" / "experiments" / "pkd.toml"
+        exp_toml.write_text(
+            '[experiment]\nname = "pkd-exp"\ndomain = "pkd"\nkind = "k"\n'
+            'testset = "data/derived/mini.jsonl"\nks = [0]\nrepeats = 1\nseeds = [7]\n',
+            encoding="utf-8")
+        exp = load_experiment(exp_toml)
+        d1, _ = load_domain_config("pkd", root=self.root)
+        d2, _ = load_domain_config("pkd", root=self.root)
+        self.assertEqual(config_hash(d1), config_hash(d2))
+        run_id = f"{exp.name}-{config_hash(d1)}"
+        self.assertTrue(run_id.startswith("pkd-exp-"))
+
+    # ---- compare 可比性 ----
+
+    def test_compare_incomparable_pair_empty_state(self):
+        """条件无交集的一对：空状态、不出图。"""
+        from kelab.store import Store
+
+        other = "mini-ffffffffffff"
+        store = Store(self.root / "runs" / other / "kelab.sqlite")
+        store.create_run(other, config_json="{}", config_hash="ffff",
+                         prompt_template_md5="abc", grammar_md5="def")
+        store.add_condition(other, "n-bm25-n5", "n", 3, 5, "bm25", "hash")
+        store.finish_run(other)  # done
+        store.close()
+        status, body = self.get(f"/compare?a={self.run_id}&b={other}")
+        self.assertEqual(200, status)
+        self.assertIn("没有可比的条件", body)
+        self.assertNotIn("<img", body)
+
+    def test_compare_default_prefers_comparable(self):
+        """默认预选跳过不可比/未完成的 run。"""
+        from kelab.web.pages_experiments import _default_compare_pair
+
+        runs = self.app.list_runs()
+        a, b = _default_compare_pair(self.app, runs)
+        if a and b:
+            ids_a = {c["condition_id"] for c in self.app.open_run(a).condition_rows(a)}
+            ids_b = {c["condition_id"] for c in self.app.open_run(b).condition_rows(b)}
+            self.assertTrue(ids_a & ids_b)
 
 
 if __name__ == "__main__":

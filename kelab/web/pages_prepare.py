@@ -63,29 +63,33 @@ def _source_candidates(app: WebApp) -> list[str]:
 def page_prepare(app: WebApp, query: dict) -> bytes:
     from .pages_annotate import _domain_options
 
-    options = "".join(f"<option>{ESC(d)}</option>" for d in _domain_options(app))
+    domains = _domain_options(app)
+    options = "".join(f"<option>{ESC(d)}</option>" for d in domains)
     datalist = "".join(f"<option value='{ESC(c)}'>" for c in _source_candidates(app))
+    # 列映射 placeholder 读当前默认领域的 [xlsx] 节（不再写死「李天音-KE」）
+    cm = _domain_col_map(app, domains[0]) if domains else _default_col_map()
     flash = f"<div class='flash'>{ESC(query['msg'][0])}</div>" if query.get("msg") else ""
     body = f"""<h1>数据准备（数据源 → 测试集 + 候选池）</h1>{flash}
 <div class='card'>
 <form method='post' action='/prepare'>
 <div style='margin:6px 0'><label>领域 <select name='domain'>{options}</select></label>
-<label style='margin-left:16px'>数据源 <input type='text' name='xlsx' list='srcfiles'
+<label style='margin-left:16px'>数据源 <input type='text' name='xlsx' list='srcfiles' id='srcinput'
   style='width:44%' class='mono' placeholder='xlsx / jsonl / Conic10K 记录目录' required
   aria-label='数据源路径'></label></div>
 <datalist id='srcfiles'>{datalist}</datalist>
 <p class='muted' style='margin:2px 0 8px'>格式由领域适配器解释（conic：xlsx/jsonl；
-conic10k：train/dev/test.json、记录目录、jsonl）。新格式在 kelab/adapters/ 注册后在领域
-[pack] 节声明即可。</p>
+conic10k：train/dev/test.json、记录目录、jsonl）。外部数据可填绝对路径；
+新格式在 kelab/adapters/ 注册后在领域 [pack] 节声明即可。</p>
+<div id='colmap'>
 <div style='margin:6px 0' class='muted'>列映射（仅 xlsx 源；留空用领域 [xlsx] 节或内置默认）：</div>
 <div class='filters'>
-<label>item_id <input type='text' name='cm_item_id' placeholder='题目' style='width:90px'></label>
-<label>question <input type='text' name='cm_question' placeholder='题干' style='width:90px'></label>
-<label>gold_ke <input type='text' name='cm_gold_ke' placeholder='李天音-KE' style='width:110px'></label>
-<label>source_id <input type='text' name='cm_source_id' placeholder='原始ID' style='width:90px'></label>
-<label>dataset <input type='text' name='cm_dataset' placeholder='所属数据集' style='width:100px'></label>
-<label>note <input type='text' name='cm_note' placeholder='备注' style='width:70px'></label>
-</div>
+<label>item_id <input type='text' name='cm_item_id' placeholder='{ESC(cm["item_id"])}' style='width:90px'></label>
+<label>question <input type='text' name='cm_question' placeholder='{ESC(cm["question"])}' style='width:90px'></label>
+<label>gold_ke <input type='text' name='cm_gold_ke' placeholder='{ESC(cm["gold_ke"])}' style='width:110px'></label>
+<label>source_id <input type='text' name='cm_source_id' placeholder='{ESC(cm["source_id"])}' style='width:90px'></label>
+<label>dataset <input type='text' name='cm_dataset' placeholder='{ESC(cm["dataset"])}' style='width:100px'></label>
+<label>note <input type='text' name='cm_note' placeholder='{ESC(cm["note"])}' style='width:70px'></label>
+</div></div>
 <div style='margin:10px 0' class='filters'>
 <label>切分测试集题数 <input type='text' name='split' placeholder='不切分' style='width:70px'></label>
 <label>开发集题数 <input type='text' name='dev' placeholder='0' style='width:56px'></label>
@@ -97,6 +101,19 @@ conic10k：train/dev/test.json、记录目录、jsonl）。新格式在 kelab/ad
 <button name='action' value='preview' class='ghost'>试导入预览（不写文件）</button>
 <button name='action' value='commit'>正式导入</button>
 </form></div>"""
+    # 非 xlsx 源（json/jsonl/目录）没有列映射概念——整块隐藏，免误导。
+    # 注意是独立静态字符串：放在 f-string 里花括号会被当插值
+    body += """<script>
+(function () {
+  const input = document.getElementById('srcinput');
+  const block = document.getElementById('colmap');
+  function toggle() {
+    const v = input.value.trim().toLowerCase();
+    block.style.display = v.endsWith('.xlsx') || v.endsWith('.xlsm') || v === '' ? '' : 'none';
+  }
+  input.addEventListener('input', toggle); toggle();
+})();
+</script>"""
     return layout("数据准备", body, active="prepare")
 
 

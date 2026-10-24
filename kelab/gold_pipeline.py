@@ -21,6 +21,7 @@ from .adapters.base import DatasetAdapter, DomainPack, Item, default_fingerprint
 REVIEW_FILE = "_review.jsonl"
 FROZEN_FILE = "frozen.jsonl"
 MANIFEST_FILE = "_gold_manifest.json"
+QUEUE_META_FILE = "_queue.json"  # 队列元信息（domain 等），web 冻结时自动带上
 
 
 @dataclass
@@ -47,14 +48,19 @@ def validate_candidates(items: list[Item], pack: DomainPack) -> list[GoldCandida
     return out
 
 
-def export_review(candidates: list[GoldCandidate], out_dir: Path | str) -> Path:
+def export_review(candidates: list[GoldCandidate], out_dir: Path | str,
+                  domain: str | None = None) -> Path:
     """导出人工复核队列：复核人在 human_verdict 填 pass/fail，可直接改 gold_ke。
 
     每行保留完整 Item（item 键）——source_id/dataset/note/metadata 全程不丢，
     冻结后的 gold 能追回源数据；顶层 gold_ke 是可编辑镜像（复核人改这里）。
+    domain 写入 _queue.json sidecar（web 冻结时自动选领域包）。
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    if domain:
+        (out_dir / QUEUE_META_FILE).write_text(
+            json.dumps({"domain": domain}, ensure_ascii=False) + "\n", encoding="utf-8")
     path = out_dir / REVIEW_FILE
     with path.open("w", encoding="utf-8", newline="\n") as fh:
         for cand in candidates:
@@ -83,6 +89,17 @@ def row_to_item(row: dict) -> Item:
     if edited is not None and str(edited).strip():
         item.gold_ke = datasets.normalize_ke_text(str(edited))
     return item
+
+
+def queue_meta(out_dir: Path | str) -> dict:
+    """读队列 sidecar（_queue.json）；没有返回 {}。"""
+    path = Path(out_dir) / QUEUE_META_FILE
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
 def load_review(path: Path | str) -> list[dict]:

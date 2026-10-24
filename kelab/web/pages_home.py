@@ -147,9 +147,9 @@ def page_home(app: WebApp) -> bytes:
     except Exception:
         pass
     status_html = f"""<div class='statstrip'>
-<div class='stat'><b>{running}</b><span>运行中</span></div>
-<div class='stat'><b>{pending_review}</b><span>待抽检条目</span></div>
-<div class='stat'><b>{n_unprereg}</b><span>未预登记实验</span></div>
+<a href='/runs' style='color:inherit'><div class='stat'><b>{running}</b><span>运行中 →</span></div></a>
+<a href='/runs' style='color:inherit'><div class='stat'><b>{pending_review}</b><span>待抽检条目 →</span></div></a>
+<a href='/prereg' style='color:inherit'><div class='stat'><b>{n_unprereg}</b><span>未预登记实验 →</span></div></a>
 </div>
 <div class='cta-row'>
 <a class='btn' href='/prepare'>准备数据 →</a>

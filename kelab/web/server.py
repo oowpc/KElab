@@ -15,8 +15,8 @@ from .pages_home import page_home
 from .pages_prepare import page_prepare, post_prepare
 from .pages_annotate import (page_annotate, page_annotate_draft, page_gold_review,
                              post_annotate_delete, post_annotate_recheck,
-                             post_annotate_save, post_gold_review_freeze,
-                             post_gold_review_save)
+                             post_annotate_save, post_gold_review_create,
+                             post_gold_review_freeze, post_gold_review_save)
 from .pages_prompts import (page_prompt_diff, page_prompt_edit, page_prompt_history,
                             page_prompt_preview, page_prompts, post_prompt_restore,
                             post_prompt_save)
@@ -161,7 +161,11 @@ def make_handler(app: WebApp):
                     except ValueError:
                         return self._redirect("/launch?msg=" + urllib.parse.quote(
                             f"试跑题数必须是整数，得到 {limit_text!r}"))
-                    run_id, _msg = app.launch(form["exp"][0], limit=limit)
+                    prereg_ok = form.get("prereg_ok", [""])[0] == "on"
+                    run_id, msg = app.launch(form["exp"][0], limit=limit,
+                                             prereg_ok=prereg_ok)
+                    if run_id is None:  # 启动守卫拒绝
+                        return self._redirect("/launch?msg=" + urllib.parse.quote(msg))
                     return self._redirect(f"/run/{run_id}")
                 if parsed.path == "/stop":
                     run_id = form["run_id"][0]
@@ -219,12 +223,16 @@ def make_handler(app: WebApp):
                     msg = post_gold_review_freeze(app, form)
                     return self._redirect(
                         f"/annotate/review?dir={form['dir'][0]}&msg={urllib.parse.quote(msg)}")
+                if parsed.path == "/annotate/review_create":
+                    msg = post_gold_review_create(app, form)
+                    return self._redirect("/annotate?msg=" + urllib.parse.quote(msg))
                 if parsed.path == "/launch_batch":
                     items = [(p, None) for p in form.get("exp", [])]
                     if not items:
                         return self._redirect(
                             "/launch?msg=" + urllib.parse.quote("请先勾选要批量启动的实验"))
-                    msg = app.enqueue_launch(items)
+                    msg = app.enqueue_launch(
+                        items, prereg_ok=form.get("prereg_ok", [""])[0] == "on")
                     return self._redirect("/launch?msg=" + urllib.parse.quote(msg))
                 if parsed.path == "/prompts/save":
                     msg = post_prompt_save(app, form)

@@ -361,12 +361,11 @@ class WebApp:
         return self.maybe_render_charts(run_id)
 
     def _render_report_sync(self, run_id: str, exp) -> None:
-        from ..config import load_domain
         from ..datasets import read_jsonl
-        from ..prereg import load_prereg
+        from ..prereg import load_history, load_prereg
         from ..report import render_report
 
-        domain = load_domain(self.root / "configs" / "domains" / f"{exp.domain}.toml")
+        domain, _ = self._load_domain_resources(exp.domain)
         testset = read_jsonl(self.root / exp.testset)
         store = self.open_run(run_id)
         try:
@@ -374,6 +373,7 @@ class WebApp:
                 store, run_id, exp, domain, testset, self.results_dir / run_id,
                 provisional=len(testset) < 50,  # 小样本自动加冒烟声明
                 prereg=load_prereg(self.root, exp.name),
+                prereg_history=load_history(self.root, exp.name),
             )
         finally:
             store.close()
@@ -412,9 +412,8 @@ class WebApp:
         if exp is None:
             return "找不到实验配置，无法重判"
         from .. import datasets, judge as judge_mod
-        from ..config import load_domain
 
-        domain = load_domain(self.root / "configs" / "domains" / f"{exp.domain}.toml")
+        domain, _ = self._load_domain_resources(exp.domain)
         if judge_client is None:
             judge_client = self.resolve_client(domain.judge_model, temperature=0.0,
                                                max_retries=domain.gen_max_retries)
@@ -467,19 +466,44 @@ class WebApp:
 
     # ---- 批量启动队列（串行，避免并发打爆 API 限流）----
 
-    def enqueue_launch(self, items: list[tuple[str, int | None]]) -> str:
-        self._launch_queue.extend(items)
-        if not self._queue_worker_alive:
+    def enqueue_launch(self, items: list[tuple[str, int | None]],
+                       prereg_ok: bool = False) -> str:
+        # 批量同样过启动守卫：未登记/漂移的实验未勾选试跑口径则从队列剔除
+        from ..config import load_experiment
+
+        accepted: list[tuple[str, int | None]] = []
+        rejected: list[str] = []
+        for exp_path, limit in items:
+            try:
+                exp = load_experiment(exp_path)
+            except Exception:
+                rejected.append(f"{exp_path}（配置读取失败）")
+                continue
+            eff_limit, msg = self.launch_gate(exp, limit, prereg_ok)
+            if msg and eff_limit is None:  # 拒绝（msg 非空 + limit None）；合法全量是 (None, None)
+                rejected.append(f"{exp.name}（{msg}）")
+            else:
+                accepted.append((exp_path, eff_limit))
+        self._launch_queue.extend(accepted)
+        if accepted and not self._queue_worker_alive:
             self._queue_worker_alive = True
             threading.Thread(target=self._queue_worker, daemon=True).start()
-        return f"已加入队列 {len(items)} 个实验（队列共 {len(self._launch_queue)} 个，串行执行）"
+        out = ""
+        if accepted:
+            out = f"已加入队列 {len(accepted)} 个实验（串行执行）"
+        if rejected:
+            out += ("；" if out else "") + "已拒绝：" + "、".join(rejected)
+        return out or "没有可启动的实验"
 
     def _queue_worker(self) -> None:
         try:
             while self._launch_queue:
                 exp_path, limit = self._launch_queue.pop(0)
                 try:
-                    run_id, _msg = self.launch(exp_path, limit=limit)
+                    run_id, _msg = self.launch(exp_path, limit=limit, prereg_ok=True)
+                    # prereg_ok=True：gate 已在入队时执行，worker 里不再重复拒绝
+                    if run_id is None:
+                        continue
                     proc = self.launched.get(run_id)
                     if proc is not None:
                         proc.wait()  # 串行：等前一个跑完再启下一个
@@ -559,16 +583,21 @@ class WebApp:
         return out
 
     def pricing_for(self, run_id: str) -> dict:
-        """读领域配置 [pricing] 节（可选）。找不到返回 {}。"""
+        """读领域配置 [pricing] 节（可选；目录包读 domain.toml）。找不到返回 {}。"""
         exp = self.find_experiment(run_id)
         if exp is None:
             return {}
-        toml_path = self.root / "configs" / "domains" / f"{exp.domain}.toml"
-        if not toml_path.exists():
+        from ..packs import resolve_domain_path
+
+        try:
+            path = resolve_domain_path(exp.domain, self.root)
+        except Exception:
             return {}
+        if path.is_dir():
+            path = path / "domain.toml"
         import tomllib
 
-        raw = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
         return raw.get("pricing", {})
 
     # ---- API 设置与模型列表 ----
@@ -630,13 +659,22 @@ class WebApp:
 
     # ---- 领域资源（标注工作台/Prompt 页共用） ----
 
-    def _load_domain_resources(self, name: str):
-        from ..config import load_domain
+    def _load_pack(self, name: str):
+        """领域包（目录布局或单文件 .toml 统一入口）。"""
+        from ..config import ConfigError
+        from ..packs import load_pack
 
-        path = self.root / "configs" / "domains" / f"{name}.toml"
-        if not path.exists():
-            raise KeyError(name)
-        return load_domain(path), path
+        try:
+            return load_pack(name, root=self.root)
+        except ConfigError as exc:
+            raise KeyError(name) from exc
+
+    def _load_domain_resources(self, name: str):
+        """返回 (domain_cfg, 包路径)。目录包与单文件布局都认。"""
+        from ..packs import resolve_domain_path
+
+        pack = self._load_pack(name)
+        return pack.domain, resolve_domain_path(name, self.root)
 
     def _read_template(self, domain) -> str:
         tpl = Path(domain.prompt_template)
@@ -711,20 +749,12 @@ class WebApp:
         同步重算 judgments.gen_coverage 并触发图表重画。
         """
         from .. import datasets, judge as judge_mod, ke_validate
-        from ..config import load_domain
-        from ..ontology import load_ontology
 
         exp = self.find_experiment(run_id)
         if exp is None:
             return "找不到实验配置，无法重新校验"
-        domain = load_domain(self.root / "configs" / "domains" / f"{exp.domain}.toml")
-        template_path = Path(domain.prompt_template)
-        if not template_path.is_absolute():
-            template_path = self.root / template_path
-        template = template_path.read_text(encoding="utf-8")
-        ontology = load_ontology(
-            domain.ontology_source, prompt_text=template, json_path=domain.ontology_json
-        )
+        domain, _ = self._load_domain_resources(exp.domain)
+        ontology = self._load_pack(exp.domain).ontology
         testset = {it.item_id: it for it in datasets.read_jsonl(self.root / exp.testset)}
         # fixed 池模式下，示例来自 pool.jsonl 而非测试集，覆盖度重算需要它
         ops_source = dict(testset)
@@ -800,16 +830,58 @@ class WebApp:
         self.force_render_charts(run_id)
         return f"重新校验完成：{total} 条，其中 {flipped} 条校验结果有变化（图表已触发重画）"
 
-    def launch(self, exp_path: str, limit: int | None = None) -> tuple[str, str]:
-        """启动 run 子进程，返回 (run_id, message)。已完成的配置直接复用 run_id（断点续跑）。
-        limit = 试跑题数（参与配置哈希，成为独立 run）。"""
-        exp = load_experiment(exp_path)
-        from ..config import config_hash, load_domain
+    def prereg_status(self, exp) -> tuple[str, str, str | None]:
+        """预登记有效性：(徽标文字, chip kind, 无效原因或 None)。启动页与守卫共用。"""
+        from ..config import dataset_fingerprint, file_md5
+        from ..prereg import check_consistency, load_history, load_prereg
 
+        reg = load_prereg(self.root, exp.name)
+        if reg is None:
+            return "未登记", "warn", "未预登记"
+        fp_now = raw_now = None
+        testset = self.root / exp.testset
+        if testset.exists():
+            fp_now = dataset_fingerprint(exp, root=self.root)
+            raw_now = file_md5(testset)
+        warnings = check_consistency(
+            reg, exp, dataset_md5_now=fp_now, dataset_file_md5_now=raw_now,
+            run_started_at=None,  # 启动前无新 run：只看配置/数据漂移，时序在报告/预登记页判
+            history=load_history(self.root, exp.name))
+        if any("不一致" in w for w in warnings):
+            return f"配置漂移 v{reg['version']}", "err", "预登记配置漂移"
+        return f"有效 v{reg['version']}", "ok", None
+
+    def launch_gate(self, exp, limit: int | None,
+                    prereg_ok: bool) -> tuple[int | None, str | None]:
+        """启动守卫（服务端兜底，不只靠前端正选）：
+        预登记缺失/配置漂移 → 未勾选试跑口径则拒绝；勾选则强制 limit≤5 并记备注。
+        返回 (生效 limit, 拒绝/覆盖消息)；拒绝时 limit=None。
+        """
+        _label, _kind, invalid = self.prereg_status(exp)
+        if invalid is None:
+            return limit, None
+        if not prereg_ok:
+            return None, (f"{invalid}：已拒绝启动。先到「预登记」页登记/修正，"
+                          f"或勾选「按试跑口径启动」。")
+        forced = min(limit or 5, 5)
+        return forced, f"{invalid}——按试跑口径启动（limit={forced}，已记入 run 备注）"
+
+    def launch(self, exp_path: str, limit: int | None = None,
+               prereg_ok: bool = False) -> tuple[str | None, str]:
+        """启动 run 子进程，返回 (run_id, message)。已完成的配置直接复用 run_id（断点续跑）。
+        limit = 试跑题数（参与配置哈希，成为独立 run）。
+        服务端启动守卫：预登记无效且未确认 → (None, 拒绝消息)。"""
+        exp = load_experiment(exp_path)
+        from ..packs import load_domain_config
+
+        limit, gate_msg = self.launch_gate(exp, limit, prereg_ok)
+        if gate_msg and limit is None:  # 守卫拒绝（全量合法时 limit 也是 None，靠 msg 区分）
+            return None, gate_msg
         if limit:
             exp.limit_items = limit
-        domain_path = self.root / "configs" / "domains" / f"{exp.domain}.toml"
-        domain = load_domain(domain_path)
+        # run_id 预测与 CLI 子进程同口径（子进程 cwd=root、root="."）——哈希字符串一致
+        domain, _ = load_domain_config(exp.domain, root=".")
+        from ..config import config_hash
         run_id = f"{exp.name}-{config_hash(domain, exp)}"
         proc = self.launched.get(run_id)
         if proc is not None and proc.poll() is None:
@@ -820,8 +892,11 @@ class WebApp:
         cmd = [sys.executable, "-X", "utf8", "-m", "kelab.cli", "run", "--exp", exp_path]
         if limit:
             cmd += ["--limit", str(limit)]
+        if gate_msg:
+            cmd += ["--note", gate_msg]
         proc = subprocess.Popen(
             cmd, cwd=self.root, stdout=log, stderr=subprocess.STDOUT,
         )
         self.launched[run_id] = proc
-        return run_id, f"已启动（日志 {log_path}）"
+        msg = f"已启动（日志 {log_path}）"
+        return run_id, (f"{gate_msg}；{msg}" if gate_msg else msg)

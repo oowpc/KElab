@@ -200,8 +200,18 @@ class NewFeaturesTest(MockServerMixin, unittest.TestCase):
     # ---- 批量启动队列 ----
 
     def test_batch_queue_drains(self):
-        with patch.object(self.app, "launch", return_value=("fake-run", "ok")) as mocked:
-            msg = self.app.enqueue_launch([("a.toml", None), ("b.toml", 5)])
+        # 守卫在入队时读实验配置——用真实文件（mini + 复制一份 mini2）
+        mini2 = self.root / "configs" / "experiments" / "mini2.toml"
+        mini2.write_text(
+            (self.root / "configs" / "experiments" / "mini.toml").read_text(encoding="utf-8")
+            .replace('name = "mini"', 'name = "mini2"'), encoding="utf-8")
+        self.addCleanup(mini2.unlink)
+        with patch.object(self.app, "launch", return_value=("fake-run", "ok")) as mocked, \
+                patch.object(self.app, "launch_gate",
+                             side_effect=lambda exp, limit, ok: (limit, None)):
+            msg = self.app.enqueue_launch([
+                (str(self.root / "configs" / "experiments" / "mini.toml"), None),
+                (str(mini2), 5)])
             self.assertIn("2 个实验", msg)
             for _ in range(300):  # 后台线程等待预算 15s（防慢机器时序抖动）
                 if not self.app._launch_queue and not self.app._queue_worker_alive:

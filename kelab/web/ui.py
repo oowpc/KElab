@@ -120,12 +120,17 @@ img.chart { max-width: 100%; border-radius: 14px; box-shadow: var(--shadow);
 @media (max-width: 720px) {
   main { padding: 14px 12px 60px; }
   h1 { font-size: 21px; }
+  h1.mono { font-size: 15px; word-break: break-all; }
   h2 { font-size: 15.5px; }
   header { padding: 8px 12px; gap: 8px; }
-  header nav { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 2px; }
+  header nav { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 2px;
+    /* 右缘渐隐提示「还能往右滑」 */
+    mask-image: linear-gradient(90deg, #000 82%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, #000 82%, transparent); }
   .grid2 { grid-template-columns: 1fr; }
   .card { padding: 14px 14px; border-radius: 14px; }
   .actionbar { top: 44px; }
+  table { font-size: 12.5px; }
 }
 """
 

@@ -16,7 +16,7 @@ def page_runs(app: WebApp) -> bytes:
     rows = []
     status_chips = {
         "running": lambda: chip("运行中", "warn"),
-        "done": lambda: chip("done", "ok"),
+        "done": lambda: chip("完成", "ok"),
         "interrupted": lambda: chip("已中断", "err"),
     }
     for r in runs:
@@ -165,13 +165,20 @@ def page_run(app: WebApp, run_id: str, query: dict | None = None) -> bytes:
             f"<input type='hidden' name='run_id' value='{ESC(run_id)}'>"
             f"<button class='ghost' style='border-color:var(--crit);color:var(--crit)'>停止运行</button></form>"
         )
+    status_zh = {"running": "运行中", "done": "完成", "interrupted": "已中断"}.get(
+        info["status"], info["status"])
+    fingerprints = (
+        f"<details style='display:inline'><summary class='muted' style='display:inline'>"
+        f"版本指纹</summary><br><span class='mono hash' style='font-size:11.5px'>"
+        f"模板 md5 {ESC(info['prompt_template_md5'] or '—')}<br>"
+        f"grammar md5 {ESC(info['grammar_md5'] or '—')}<br>"
+        f"数据指纹 {ESC(info['dataset_md5'] or '—' if 'dataset_md5' in info.keys() else '—')}"
+        f"</span></details>"
+    )
     body.append(
         f"<div class='card'>{stop_form}<b>总进度</b> <span id='overall-progress'>{overall}</span><br>"
-        f"<span class='muted'>开始 {ESC(fmt_time(info['started_at']))}　状态 {ESC(info['status'])}　"
-        f"模板 md5 <span class='mono hash'>{ESC(info['prompt_template_md5'] or '—')}</span>　"
-        f"grammar md5 <span class='mono hash'>{ESC(info['grammar_md5'] or '—')}</span>　"
-        f"数据指纹 <span class='mono hash'>{ESC(info['dataset_md5'] or '—' if 'dataset_md5' in info.keys() else '—')}</span>"
-        f"</span></div>"
+        f"<span class='muted'>开始 {ESC(fmt_time(info['started_at']))}　状态 {ESC(status_zh)}　"
+        f"</span>{fingerprints}</div>"
     )
 
     # 成本卡：生成/judge 的 token 与调用数（[pricing] 配置后自动换算 ¥）
