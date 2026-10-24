@@ -892,6 +892,49 @@ class RoundSevenTest(unittest.TestCase):
         self.assertTrue(last.exists())
         self.assertEqual("conic", last.read_text(encoding="utf-8").strip())
 
+    # ---- 系统资源监控 ----
+
+    def test_sys_api_returns_html_and_metrics(self):
+        status, body = self.get("/api/sys")
+        self.assertEqual(200, status)
+        data = json.loads(body)
+        self.assertIn("html", data)
+        self.assertIn("backend", data)
+        self.assertIn("ts", data)
+        self.assertIn("GPU", data["html"])  # 无 GPU 时如实说明而非省略
+
+    def test_home_has_syscard(self):
+        _, body = self.get("/")
+        self.assertIn("data-sys-host", body)
+        self.assertIn("/api/sys", body)
+
+    def test_sysmon_sample_and_fallback(self):
+        from kelab.web import sysmon
+
+        data = sysmon.sample(".")
+        for key in ("cpu_percent", "mem_percent", "backend", "gpu", "ts"):
+            self.assertIn(key, data)
+        if sysmon.psutil is not None:
+            self.assertEqual("psutil", data["backend"])
+            self.assertIsNotNone(data["cpu_percent"])
+        # stdlib 兜底路径直接可跑（不依赖 psutil）
+        fallback = sysmon._sample_stdlib(".")
+        self.assertIn("cpu_percent", fallback)  # 系统级 CPU 无零依赖来源 → None 也合法
+        card = sysmon.render_card(data)
+        self.assertIn("CPU", card)
+        self.assertIn("内存", card)
+
+    def test_sysmon_gpu_card_with_fake_gpu(self):
+        from kelab.web import sysmon
+
+        card = sysmon.render_card({
+            "cpu_percent": 12.0, "mem_percent": 55.0, "backend": "psutil",
+            "gpu": {"name": "RTX 4060", "util": 88, "mem_used_mb": 3000,
+                    "mem_total_mb": 8188}, "ts": "t"})
+        self.assertIn("RTX 4060", card)
+        self.assertIn("88%", card)
+        self.assertIn("3000/8188", card)
+
 
 if __name__ == "__main__":
     unittest.main()

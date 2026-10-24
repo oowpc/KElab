@@ -123,6 +123,13 @@ def make_handler(app: WebApp):
                         and parts[4] == "progress":
                     return self._send(api_progress(app, parts[3]),
                                       "application/json; charset=utf-8")
+                if path == "/api/sys":
+                    from .sysmon import render_card, sample
+
+                    data = sample(str(app.root))
+                    return self._send(json.dumps({"html": render_card(data), **data},
+                                                 ensure_ascii=False).encode("utf-8"),
+                                      "application/json; charset=utf-8")
                 if path.startswith("/files/results/"):
                     return self._send_file(path[len("/files/results/"):])
                 if path.startswith("/derived/"):

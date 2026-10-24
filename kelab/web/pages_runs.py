@@ -199,6 +199,14 @@ def page_run(app: WebApp, run_id: str, query: dict | None = None) -> bytes:
         f"<span class='muted'>开始 {ESC(fmt_time(info['started_at']))}　状态 {ESC(status_zh)}　"
         f"</span>{fingerprints}</div>"
     )
+    if info["status"] == "running":
+        from .sysmon import render_card, sample
+
+        body.append(
+            f"<div class='card'><b>系统状态</b>"
+            f"<div data-sys-host style='margin-top:8px'>"
+            f"{render_card(sample(str(app.root)))}</div></div>"
+        )
 
     # 成本卡：生成/judge 的 token 与调用数（[pricing] 配置后自动换算 ¥）
     cost = app.cost_summary(run_id)
@@ -379,6 +387,10 @@ def page_run(app: WebApp, run_id: str, query: dict | None = None) -> bytes:
     store.close()
 
     poll = POLL_JS % run_id if info["status"] == "running" else ""
+    if info["status"] == "running":
+        from .sysmon import SYSMON_JS
+
+        poll += SYSMON_JS
     return layout(run_id, "".join(body), poll + auto_reload, active="runs")
 
 

@@ -156,9 +156,16 @@ def page_home(app: WebApp) -> bytes:
 <a class='btn' href='/launch'>启动实验 →</a>
 <a class='btn ghost' href='/runs'>看结果 →</a>
 </div>"""
+    # 系统资源卡（CPU/内存/GPU，3 秒轮询；psutil 可选，stdlib 兜底）
+    from .sysmon import SYSMON_JS, render_card, sample
+
+    sys_card = (f"<div class='card'><b>系统状态</b>"
+                f"<div data-sys-host style='margin-top:8px'>{render_card(sample(str(app.root)))}</div>"
+                f"</div>")
     body = f"""<h1>kelab 实验平台</h1>
 {doctor_html}
 {status_html}
+{sys_card}
 <div class='card'>这个平台回答两个问题：<b>few-shot 给几条 gold KE 示例（k）？</b>
 <b>从多大的候选池里挑（N）？</b>做法是固定其余一切（prompt 模板、模型、温度、判分），
 只动一个因子，看语义等价率怎么变。</div>
@@ -174,4 +181,4 @@ def page_home(app: WebApp) -> bytes:
 <div class='grid2'>{_nav_cards()}</div>
 </details>
 """
-    return layout("工作流向导", body, active="home")
+    return layout("工作流向导", body, SYSMON_JS, active="home")
