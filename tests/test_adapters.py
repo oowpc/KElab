@@ -249,9 +249,52 @@ class Conic10KAdapterTest(unittest.TestCase):
             {"id": "r2", "problem": "求抛物线焦点"},
         ], ensure_ascii=False), encoding="utf-8")
         items = self.adapter.load(src)
-        self.assertEqual(["r1", "r2"], [it.item_id for it in items])
+        # item_id 一律 split 前缀格式（官方记录无全局唯一 id）；原始 id 进 source_id
+        self.assertEqual(["conic10k-train-00001", "conic10k-train-00002"],
+                         [it.item_id for it in items])
+        self.assertEqual(["r1", "r2"], [it.source_id for it in items])
         self.assertEqual("", items[0].gold_ke)        # 原始数据无 KE → 待标注
         self.assertEqual("x^2/4+y^2=1", items[0].metadata["answer"])
+
+    def test_official_schema_full_metadata(self):
+        """官方记录字段（text/fact_expressions/query_expressions/answer_expressions/
+        fact_spans/query_spans/process）一个不丢，全进 metadata。"""
+        record = {
+            "text": "已知椭圆 x²/25+y²/9=1，求其焦距",
+            "fact_expressions": "Eq(x**2/25 + y**2/9, 1)",
+            "query_expressions": "focal_length",
+            "answer_expressions": "8",
+            "fact_spans": ["x²/25+y²/9=1"],
+            "query_spans": ["焦距"],
+            "process": "c²=25-9=16, 2c=8",
+        }
+        src = Path(self.tmp.name) / "dev.json"
+        src.write_text(json.dumps([record], ensure_ascii=False), encoding="utf-8")
+        it = self.adapter.load(src)[0]
+        self.assertEqual("conic10k-dev-00001", it.item_id)
+        self.assertIn("焦距", it.question)
+        self.assertEqual("", it.gold_ke)
+        md = it.metadata
+        self.assertEqual("8", md["answer"])  # answer 主键 = answer_expressions
+        for key in ("fact_expressions", "query_expressions", "answer_expressions",
+                    "fact_spans", "query_spans", "process"):
+            self.assertIn(key, md, f"metadata 缺 {key}")
+        self.assertEqual("c²=25-9=16, 2c=8", md["process"])
+        self.assertEqual("dev", md["split"])
+        self.assertEqual(1, md["source_index"])
+
+    def test_cross_split_ids_unique(self):
+        """train/dev/test 各自从 1 编号也不撞 id（官方数据实测撞过）。"""
+        rec = {"text": "同一题干"}
+        paths = []
+        for split in ("train", "dev", "test"):
+            p = Path(self.tmp.name) / f"{split}.json"
+            p.write_text(json.dumps([rec, rec], ensure_ascii=False), encoding="utf-8")
+            paths.extend(self.adapter.load(p))
+        ids = [it.item_id for it in paths]
+        self.assertEqual(6, len(set(ids)))  # 全唯一
+        self.assertIn("conic10k-test-00001", ids)
+        self.assertIn("conic10k-dev-00002", ids)
 
     def test_missing_question_fails_loud(self):
         src = Path(self.tmp.name) / "bad.json"

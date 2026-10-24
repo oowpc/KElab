@@ -42,22 +42,30 @@ class Conic10KAdapter(ConicAdapter):
 
     支持三种源形态：
     - 审校记录目录（每文件一条：uuid/query.question/gold_ke.content/answer.gold_expr）
-    - train/dev/test.json（list 或 {"data": [...]}，键名宽松探测 problem/question/text）
-    - .jsonl（每行一条记录，同上探测）
-    gold_ke 缺失 → 空串（待标注）；原始表达式/答案/标签进 metadata，不污染核心 schema。
+    - train/dev/test.json（list 或 {"data": [...]}；官方记录字段为
+      text / fact_expressions / query_expressions / answer_expressions /
+      fact_spans / query_spans / process，全部进 metadata）
+    - .jsonl（每行一条记录，同上）
+
+    id 纪律：官方记录无全局唯一 id（各 split 内 idx 从 1 起，train/dev/test 互撞），
+    所以 list/jsonl 源的 item_id 一律 conic10k-{split}-{idx:05d}（split 取文件名 stem）；
+    原始 id（若有）进 source_id。gold_ke 缺失 → 空串（待标注，走 gold 流水线）。
     """
     name = "conic10k"
 
     def load(self, source: Path, col_map: dict[str, str] | None = None) -> list[Item]:
         source = Path(source)
         records: list[dict] = []
+        split: str | None = None
         if source.is_dir():
             for path in sorted(source.glob("*.json")):
-                records.append(self._read_record(path))
+                records.append(self._read_record(path))  # 审校记录：uuid 即身份
         elif source.suffix == ".jsonl":
+            split = source.stem
             with source.open("r", encoding="utf-8") as fh:
                 records = [json.loads(line) for line in fh if line.strip()]
         elif source.suffix == ".json":
+            split = source.stem
             raw = json.loads(source.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 raw = raw.get("data") or raw.get("records") or [raw]
@@ -68,7 +76,7 @@ class Conic10KAdapter(ConicAdapter):
             )
         if not records:
             raise datasets.DataError(f"{source} 未导入任何记录")
-        return [self._record_to_item(rec, i) for i, rec in enumerate(records, 1)]
+        return [self._record_to_item(rec, i, split) for i, rec in enumerate(records, 1)]
 
     def _read_record(self, path: Path) -> dict:
         try:
@@ -76,7 +84,7 @@ class Conic10KAdapter(ConicAdapter):
         except (json.JSONDecodeError, OSError) as exc:
             raise datasets.DataError(f"记录文件 {path} 读取失败: {exc}") from exc
 
-    def _record_to_item(self, raw: dict, idx: int) -> Item:
+    def _record_to_item(self, raw: dict, idx: int, split: str | None = None) -> Item:
         query = raw.get("query") if isinstance(raw.get("query"), dict) else {}
         question = (query.get("question") or raw.get("question") or raw.get("problem")
                     or raw.get("text") or raw.get("problem_zh"))
@@ -86,24 +94,38 @@ class Conic10KAdapter(ConicAdapter):
         if isinstance(gold, dict):
             gold = gold.get("content") or ""
         gold = gold or raw.get("ke") or raw.get("gold") or ""
+
+        if split is None:  # 审校记录目录：uuid 身份
+            item_id = str(raw.get("uuid") or raw.get("id") or f"conic10k-{idx:05d}")
+        else:              # 官方 list/jsonl：split 前缀防跨切分撞 id
+            item_id = f"conic10k-{split}-{idx:05d}"
+        raw_id = raw.get("id") or raw.get("uuid") or raw.get("upstream_id")
+
+        # 官方表达式/span/过程字段全进 metadata；answer 主键取 answer_expressions
         answer = raw.get("answer")
         if isinstance(answer, dict) and "gold_expr" in answer:
             expr = answer["gold_expr"]
             answer = expr.get("content") if isinstance(expr, dict) else str(expr)
-        item_id = str(raw.get("uuid") or raw.get("id") or raw.get("upstream_id")
-                      or f"conic10k-{idx:05d}")
         metadata = {
-            "answer": answer or raw.get("expressions"),
-            "tags": raw.get("tags") or [],
-            "notes": raw.get("notes") or "",
-            "verification": raw.get("verification") or {},
+            "answer": raw.get("answer_expressions") or answer or raw.get("expressions"),
+            "fact_expressions": raw.get("fact_expressions"),
+            "query_expressions": raw.get("query_expressions"),
+            "answer_expressions": raw.get("answer_expressions"),
+            "fact_spans": raw.get("fact_spans"),
+            "query_spans": raw.get("query_spans"),
+            "process": raw.get("process"),
+            "tags": raw.get("tags"),
+            "notes": raw.get("notes"),
+            "verification": raw.get("verification"),
             "lang": query.get("lang") or raw.get("lang"),
+            "split": split,
+            "source_index": idx,
         }
         return Item(
             item_id=item_id,
             question=str(question).strip(),
             gold_ke=datasets.normalize_ke_text(gold) if gold else "",
-            source_id=raw.get("upstream_id") or raw.get("uuid"),
+            source_id=str(raw_id) if raw_id is not None else None,
             dataset=raw.get("source") or "conic_10k",
             metadata={k: v for k, v in metadata.items() if v not in (None, "", [], {})},
         )
